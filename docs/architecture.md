@@ -12,6 +12,13 @@ Every viewer must see the box in the same place, and the server must agree on co
 
 ## Milestone 2 plan (payments on testnet)
 
+- **Queue rules.** These live in `src/core/queue.ts` as pure functions. `advance(state, now)` applies every handover that is due. It returns the events to broadcast and the time of the next alarm.
+  - A holder keeps the box for at least 60 seconds.
+  - A corner hit protects the holder for 60 seconds from the moment of the hit. A corner inside that window extends it again.
+  - With nobody queued, the holder keeps the box until the next buyer pays.
+- **Facilitator.** Testnet uses the public x402.org facilitator, which supports Base Sepolia and Solana devnet with no account. Mainnet (M4) uses Coinbase's facilitator.
+- **Settle before queueing.** The x402 Hono middleware runs the route handler before it settles the payment. So the server calls `verifyPayment` and `settlePayment` itself, and only queues the takeover and writes the sales row after settlement succeeds.
+
 - **Flow.** A buyer submits their card. The server returns an x402 payment requirement ($1 USDC on Base Sepolia or Solana devnet). The facilitator verifies and settles, and the server then appends the takeover to the queue. The queue is first paid, first shown. A takeover starts when the current one has held at least 60 seconds, plus 60 seconds of protection per corner hit.
 - **Broadcast.** Takeover events go out over SSE or WebSocket: `{id, holder, startMs, seed}`.
 - **No keys on the server.** x402 only needs the receiving address. The facilitator settles the payment. The receiving wallet is a fresh address Cole creates, never a personal wallet.
