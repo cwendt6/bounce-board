@@ -14,10 +14,13 @@ One box bounces around an old classroom projector screen. $1 in USDC puts your n
 
 ```bash
 npm install
-npm run dev        # http://localhost:5173
-npm test           # motion, schedule and format tests
+npm run dev          # page only, demo data: http://localhost:5173
+npm run dev:worker   # page + Worker + Durable Object: http://localhost:8787
+npm run build && npm test
 npm run lint && npm run typecheck
 ```
+
+For local testing without payments, create `.dev.vars` with `DEV_FAKE_PAY=true`. Then `POST /api/dev/take` with a card queues a takeover. The switch is off in every deployed environment.
 
 ## Roadmap
 

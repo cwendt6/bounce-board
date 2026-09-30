@@ -22,7 +22,9 @@ Every viewer must see the box in the same place, and the server must agree on co
 - **Flow.** A buyer submits their card. The server returns an x402 payment requirement ($1 USDC on Base Sepolia or Solana devnet). The facilitator verifies and settles, and the server then appends the takeover to the queue. The queue is first paid, first shown. A takeover starts when the current one has held at least 60 seconds, plus 60 seconds of protection per corner hit.
 - **Broadcast.** Takeover events go out over SSE or WebSocket: `{id, holder, startMs, seed}`.
 - **No keys on the server.** x402 only needs the receiving address. The facilitator settles the payment. The receiving wallet is a fresh address Cole creates, never a personal wallet.
-- **Host.** Still to decide with Cole: Cloudflare Workers + Durable Objects (one object holds the queue and the clock) or Supabase. Both have free tiers. Either needs an account Cole creates.
+- **Host.** Cloudflare (Cole's account). One Worker serves the built page as static assets and handles `/api/*`. One Durable Object (`worker/board.ts`) holds the queue, the clock, the sales log (SQLite) and every viewer's WebSocket. Handovers run on Durable Object alarms.
+- **API.** `GET /api/state` returns a snapshot. `GET /api/live` opens a WebSocket that pushes snapshots and answers `{type: "ping", t0}` with the server time for clock sync. The page keeps the fastest round trip's offset. `POST /api/dev/take` exists only when `DEV_FAKE_PAY=true` (local dev and tests).
+- **Page modes.** Served by the Worker, the page runs live. On GitHub Pages there is no `/api`, so it falls back to the demo rotation.
 
 ## Sales log (bookkeeping)
 

@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "bounce-board",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-08-22",
+  "compatibility_flags": ["nodejs_compat"],
+  // The built site (npm run build) is served as static assets; /api/* goes to the Worker.
+  "assets": { "directory": "./dist", "run_worker_first": ["/api/*"] },
+  "durable_objects": { "bindings": [{ "name": "BOARD", "class_name": "Board" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Board"] }],
+  "vars": {
+    "PRICE_USD": "1",
+    // Local testing only: lets POST /api/dev/take queue a takeover with no payment.
+    // Never true in a deployed environment.
+    "DEV_FAKE_PAY": "false"
+  }
+  // account_id comes from the CLOUDFLARE_ACCOUNT_ID env var at deploy time.
+}
