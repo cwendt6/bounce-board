@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bounce Board</title>
+    <meta name="description" content="One box. It bounces. $1 puts your name in it until the next buyer takes over." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <header class="top">
+      <h1>BOUNCE BOARD</h1>
+      <p class="tag">$1 puts you in the box. Hold it until the next buyer takes over.</p>
+      <p class="demo-flag">Preview: demo data, no payments yet.</p>
+    </header>
+
+    <main class="layout">
+      <section class="stage" aria-label="Projector screen">
+        <div class="room">
+          <div class="screen" id="screen">
+            <canvas id="canvas" aria-label="The bouncing box" role="img"></canvas>
+            <div class="light" aria-hidden="true"></div>
+            <div class="grain" aria-hidden="true"></div>
+            <div class="corner-flash" id="corner-flash" aria-live="polite"></div>
+          </div>
+        </div>
+        <div class="now-holding" id="now-holding" aria-live="polite"></div>
+      </section>
+
+      <aside class="side queue" aria-label="Queue">
+        <h2>Up next</h2>
+        <ol id="queue" class="list"></ol>
+        <button class="take" type="button" disabled title="Payments arrive in milestone 2 (testnet)">
+          Take the box ($1)
+        </button>
+        <p class="fine">Payments: USDC on Base and Solana, coming soon.</p>
+      </aside>
+
+      <aside class="side boards" aria-label="Leaderboards">
+        <div class="stats">
+          <div><span id="stat-takeovers">0</span><small>takeovers</small></div>
+          <div><span id="stat-holders">0</span><small>unique holders</small></div>
+        </div>
+        <h2>Corner Club</h2>
+        <ol id="corner-club" class="list compact"></ol>
+        <h2>Longest reign</h2>
+        <ol id="longest" class="list compact"></ol>
+        <h2>Recent holders</h2>
+        <ol id="recent" class="list"></ol>
+      </aside>
+    </main>
+
+    <footer class="foot">
+      <p>Paid placement. Not an endorsement. Not financial advice.</p>
+    </footer>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
