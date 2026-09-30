@@ -9,15 +9,22 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p worker",
     "lint": "biome check .",
-    "format": "biome check --write ."
+    "format": "biome check --write .",
+    "dev:worker": "npm run build && wrangler dev"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.14",
+    "@cloudflare/workers-types": "^5.20260930.2",
     "@types/node": "^26.6.3",
     "typescript": "^7.0.2",
     "vite": "^8.3.1",
-    "vitest": "^5.0.2"
+    "wrangler": "^4.145.0",
+    "vitest": "^4.1.11",
+    "@cloudflare/vitest-pool-workers": "^0.22.0"
+  },
+  "dependencies": {
+    "hono": "^4.13.12"
   }
 }

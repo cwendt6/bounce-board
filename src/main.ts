@@ -9,15 +9,9 @@ import {
   positionAt,
   SCREEN_W,
 } from "./core/motion";
-import { DEMO_REIGN_SECONDS, type Reign, reignAt, upcoming } from "./core/schedule";
-import {
-  DEMO_CORNER_CLUB,
-  DEMO_HOLDERS,
-  DEMO_LONGEST_REIGN,
-  DEMO_STATS,
-  type Holder,
-} from "./fake-data";
 import { boxLabel, dexscreenerUrl, formatDuration, initials, shortAddress } from "./format";
+import { pickSource, type Source } from "./sources";
+import type { CardView, View } from "./view";
 
 const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
@@ -84,7 +78,7 @@ function roundRect(x: number, y: number, w: number, h: number, r: number) {
   ctx.closePath();
 }
 
-function drawBox(holder: Holder, phase: Phase, t: number) {
+function drawBox(holder: CardView, phase: Phase, t: number) {
   const scale = canvas.width / SCREEN_W;
   const p = positionAt(phase, t);
   const x = p.x * scale;
@@ -145,7 +139,7 @@ function showCorner(hit: CornerHit) {
 
 // ---------- sidebars ----------
 
-function holderRow(holder: Holder, extra: Child[] = []): HTMLLIElement {
+function holderRow(holder: CardView, extra: Child[] = []): HTMLLIElement {
   const logo = h("span", { class: "logo", "aria-hidden": "true" }, initials(holder.name));
   logo.style.background = holder.color;
   const meta: Child[] = [];
@@ -199,107 +193,122 @@ function holderRow(holder: Holder, extra: Child[] = []): HTMLLIElement {
   );
 }
 
-function reignCorners(r: Reign): number {
-  return cornerHits(initialPhase(r.seed), 0, (r.endMs - r.startMs) / 1000).length;
+function emptyRow(text: string): HTMLLIElement {
+  return h("li", { class: "empty" }, text);
 }
 
-function renderQueue(now: number) {
-  const list = $("queue");
-  const rows = upcoming(now, DEMO_HOLDERS.length, 4).map((r) => {
-    const secs = (r.startMs - now) / 1000;
-    return holderRow(DEMO_HOLDERS[r.holder], [
-      h("span", { class: "badge" }, `in ${formatDuration(secs)}`),
-    ]);
-  });
-  list.replaceChildren(...rows);
+function renderQueue(v: View) {
+  const rows = v.queue.map((q) =>
+    holderRow(q.card, [
+      h("span", { class: "badge" }, `in ${formatDuration((q.startMs - v.now) / 1000)}`),
+    ]),
+  );
+  $("queue").replaceChildren(
+    ...(rows.length ? rows : [emptyRow("Nobody queued. The box is yours.")]),
+  );
 }
 
-function renderRecent(now: number) {
-  const cur = reignAt(now, DEMO_HOLDERS.length);
-  const rows: HTMLLIElement[] = [];
-  for (let i = 1; i <= 10; i++) {
-    const r = reignAt(cur.startMs - i * DEMO_REIGN_SECONDS * 1000, DEMO_HOLDERS.length);
-    const corners = reignCorners(r);
-    rows.push(
-      holderRow(DEMO_HOLDERS[r.holder], [
-        h(
-          "span",
-          { class: "badge" },
-          `${formatDuration(DEMO_REIGN_SECONDS)}${corners ? ` · ◢ ${corners}` : ""}`,
-        ),
-      ]),
-    );
+function renderBoards(v: View) {
+  $("stat-takeovers").textContent = v.stats.takeovers.toLocaleString("en-US");
+  $("stat-holders").textContent = v.stats.uniqueHolders.toLocaleString("en-US");
+  const club = v.cornerClub.map((c) =>
+    h(
+      "li",
+      {},
+      h("span", { class: "name" }, c.label),
+      h("span", { class: "badge" }, `◢ ${c.corners}`),
+    ),
+  );
+  $("corner-club").replaceChildren(...(club.length ? club : [emptyRow("No corner hits yet.")]));
+  const longest = v.longest.map((c) =>
+    h(
+      "li",
+      {},
+      h("span", { class: "name" }, c.label),
+      h("span", { class: "badge" }, formatDuration(c.ms / 1000)),
+    ),
+  );
+  $("longest").replaceChildren(...(longest.length ? longest : [emptyRow("No reigns yet.")]));
+  const recent = v.recent.map((r) =>
+    holderRow(r.card, [
+      h(
+        "span",
+        { class: "badge" },
+        `${formatDuration(r.heldMs / 1000)}${r.corners ? ` · ◢ ${r.corners}` : ""}`,
+      ),
+    ]),
+  );
+  $("recent").replaceChildren(...(recent.length ? recent : [emptyRow("No holders yet.")]));
+}
+
+function renderNowHolding(v: View, corners: number) {
+  const el = $("now-holding");
+  if (!v.current) {
+    el.replaceChildren("The box is empty. Be the first to take it.");
+    return;
   }
-  $("recent").replaceChildren(...rows);
-}
-
-function renderBoards() {
-  $("stat-takeovers").textContent = DEMO_STATS.takeovers.toLocaleString("en-US");
-  $("stat-holders").textContent = DEMO_STATS.uniqueHolders.toLocaleString("en-US");
-  $("corner-club").replaceChildren(
-    ...DEMO_CORNER_CLUB.map((c) =>
-      h(
-        "li",
-        {},
-        h("span", { class: "name" }, c.ticker ? `$${c.ticker}` : c.name),
-        h("span", { class: "badge" }, `◢ ${c.corners}`),
-      ),
-    ),
-  );
-  $("longest").replaceChildren(
-    ...DEMO_LONGEST_REIGN.map((c) =>
-      h(
-        "li",
-        {},
-        h("span", { class: "name" }, c.ticker ? `$${c.ticker}` : c.name),
-        h("span", { class: "badge" }, formatDuration(c.seconds)),
-      ),
-    ),
-  );
-}
-
-function renderNowHolding(holder: Holder, reign: Reign, now: number, corners: number) {
-  const left = formatDuration((reign.endMs - now) / 1000);
-  $("now-holding").replaceChildren(
+  const cur = v.current;
+  const timing =
+    cur.endMs !== null
+      ? `${formatDuration((cur.endMs - v.now) / 1000)} left in demo reign`
+      : `held ${formatDuration((v.now - cur.startMs) / 1000)}`;
+  el.replaceChildren(
     "Now holding: ",
-    h("strong", {}, boxLabel(holder)),
-    ` · ${left} left in demo reign${corners ? ` · ◢ ${corners} corner${corners > 1 ? "s" : ""}` : ""}`,
+    h("strong", {}, boxLabel(cur.card)),
+    ` · ${timing}${corners ? ` · ◢ ${corners} corner${corners > 1 ? "s" : ""}` : ""}`,
   );
 }
 
 // ---------- main loop ----------
 
-let reign = reignAt(Date.now(), DEMO_HOLDERS.length);
-let phase = initialPhase(reign.seed);
-let lastT = (Date.now() - reign.startMs) / 1000;
-let cornersThisReign = cornerHits(phase, 0, lastT).length;
+const EMPTY_CARD: CardView = {
+  name: "Your name here",
+  description: "",
+  link: "https://example.com",
+  color: "#f2c14e",
+};
+const EMPTY_PHASE = initialPhase(1);
+
+let source: Source;
+let currentId: string | null = null;
+let phase = EMPTY_PHASE;
+let lastT = 0;
+let corners = 0;
 let lastSidebarSecond = -1;
+let boardsDirty = true;
 
 function tick() {
-  const now = Date.now();
-  if (now >= reign.endMs) {
-    reign = reignAt(now, DEMO_HOLDERS.length);
-    phase = initialPhase(reign.seed);
-    lastT = 0;
-    cornersThisReign = 0;
-    renderRecent(now);
+  const v = source.view();
+  const cur = v.current;
+  const id = cur?.id ?? null;
+  if (id !== currentId) {
+    currentId = id;
+    phase = cur ? initialPhase(cur.seed) : EMPTY_PHASE;
+    lastT = cur ? (v.now - cur.startMs) / 1000 : 0;
+    corners = cur ? cornerHits(phase, 0, lastT).length : 0;
+    boardsDirty = true;
   }
-  const t = (now - reign.startMs) / 1000;
-  const hits = cornerHits(phase, lastT, t);
-  if (hits.length) {
-    cornersThisReign += hits.length;
-    showCorner(hits[hits.length - 1]);
+
+  const t = cur ? (v.now - cur.startMs) / 1000 : v.now / 1000;
+  if (cur) {
+    const hits = cornerHits(phase, lastT, t);
+    if (hits.length) {
+      corners += hits.length;
+      showCorner(hits[hits.length - 1]);
+    }
+    lastT = t;
   }
-  lastT = t;
+  drawBox(cur?.card ?? EMPTY_CARD, phase, cur ? t : t % 3600);
 
-  const holder = DEMO_HOLDERS[reign.holder];
-  drawBox(holder, phase, t);
-
-  const sec = Math.floor(now / 1000);
-  if (sec !== lastSidebarSecond) {
+  const sec = Math.floor(v.now / 1000);
+  if (sec !== lastSidebarSecond || boardsDirty) {
     lastSidebarSecond = sec;
-    renderQueue(now);
-    renderNowHolding(holder, reign, now, cornersThisReign);
+    renderQueue(v);
+    renderNowHolding(v, corners);
+  }
+  if (boardsDirty) {
+    boardsDirty = false;
+    renderBoards(v);
   }
 }
 
@@ -323,14 +332,23 @@ function start() {
   }
 }
 
-document.documentElement.style.setProperty("--grain-url", makeGrain());
-new ResizeObserver(() => {
+async function main() {
+  document.documentElement.style.setProperty("--grain-url", makeGrain());
+  source = await pickSource(() => {
+    boardsDirty = true;
+  });
+  const live = source.view().mode === "live";
+  $("demo-flag").textContent = live
+    ? "Testnet preview: no real money yet."
+    : "Preview: demo data, no payments yet.";
+  new ResizeObserver(() => {
+    resize();
+    tick();
+  }).observe(canvas);
   resize();
-  tick();
-}).observe(canvas);
-resize();
-renderBoards();
-renderRecent(Date.now());
-reducedMotion.addEventListener("change", start);
-document.fonts?.ready.then(() => tick());
-start();
+  reducedMotion.addEventListener("change", start);
+  document.fonts?.ready.then(() => tick());
+  start();
+}
+
+main();

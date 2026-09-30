@@ -13,8 +13,9 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
-      - run: npm test
+      # Build first: the Worker tests serve dist/ as static assets.
       - run: npm run build
+      - run: npm test
   secrets:
     runs-on: ubuntu-latest
     steps:
