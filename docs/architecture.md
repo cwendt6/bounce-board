@@ -26,6 +26,18 @@ Every viewer must see the box in the same place, and the server must agree on co
 - **API.** `GET /api/state` returns a snapshot. `GET /api/live` opens a WebSocket that pushes snapshots and answers `{type: "ping", t0}` with the server time for clock sync. The page keeps the fastest round trip's offset. `POST /api/dev/take` exists only when `DEV_FAKE_PAY=true` (local dev and tests).
 - **Page modes.** Served by the Worker, the page runs live. On GitHub Pages there is no `/api`, so it falls back to the demo rotation.
 
+## Taking the box (API)
+
+`POST /api/take` with the card as JSON. Bots and agents use it the same way the page does.
+
+1. Without a payment, the answer is `402`. The price is in the `PAYMENT-REQUIRED` header (x402 v2, base64 JSON) and repeated in the body. A bad card gets `400` before any payment is asked for.
+2. The client signs an EIP-3009 USDC authorization for exactly that amount and retries with `PAYMENT-SIGNATURE`. The buyer needs USDC only, since the facilitator pays the gas.
+3. The server verifies, then settles. After settlement it writes the sale and queues the takeover in one SQLite transaction. The answer is `201` with the tx hash, the snapshot and a `PAYMENT-RESPONSE` header.
+
+If settlement succeeds but queueing fails, the server logs `SETTLED BUT NOT QUEUED <tx>` and answers `500` with the tx hash so the sale can be reconciled. A repeated tx hash is a no-op.
+
+Config: `X402_NETWORK` and `FACILITATOR_URL` are vars in `wrangler.jsonc`. `PAY_TO_ADDRESS` is set outside the repo (`.dev.vars` locally, `wrangler secret put PAY_TO_ADDRESS` in production). `GET /api/admin/sales.csv` needs `Authorization: Bearer <ADMIN_TOKEN>` and returns 404 until `ADMIN_TOKEN` is set.
+
 ## Sales log (bookkeeping)
 
 Every settled payment is one row, written in the same transaction that queues the takeover. The table and its CSV export use the same columns, so btc-mining-ledger can import it as business income for CT Wendt Holdings LLC.
