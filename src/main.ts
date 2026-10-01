@@ -297,9 +297,22 @@ function emptyRow(text: string): HTMLLIElement {
   return h("li", { class: "empty" }, text);
 }
 
+let reportsEnabled = false;
+
+function reportButton(id: string, label: string): HTMLButtonElement {
+  const b = h(
+    "button",
+    { type: "button", class: "link-button", title: `Report ${label}` },
+    "report",
+  );
+  b.addEventListener("click", () => openReport(id, label));
+  return b;
+}
+
 function renderQueue(v: View) {
   const rows = v.queue.map((q) =>
     holderRow(q.card, [
+      reportsEnabled && q.id ? reportButton(q.id, boxLabel(q.card)) : null,
       h("span", { class: "badge" }, `in ${formatDuration((q.startMs - v.now) / 1000)}`),
     ]),
   );
@@ -366,6 +379,7 @@ function renderRecent(v: View) {
 
 function renderNowHolding(v: View, corners: number) {
   const el = $("now-holding");
+  ($("report-current") as HTMLButtonElement).hidden = !(reportsEnabled && v.current);
   if (!v.current) {
     el.replaceChildren("The box is empty. Be the first to take it.");
     return;
@@ -451,6 +465,49 @@ function start() {
   } else {
     loop();
   }
+}
+
+// ---------- reports ----------
+
+let reportId: string | null = null;
+
+function openReport(id: string, label: string) {
+  reportId = id;
+  $("report-target").textContent = `Listing: ${label}`;
+  $("report-status").textContent = "";
+  ($("report-dialog") as HTMLDialogElement).showModal();
+}
+
+function setupReports() {
+  reportsEnabled = true;
+  const dialog = $("report-dialog") as HTMLDialogElement;
+  const form = $("report-form") as HTMLFormElement;
+  const status = $("report-status");
+  const current = $("report-current") as HTMLButtonElement;
+  current.addEventListener("click", () => {
+    const cur = source.view().current;
+    if (cur) openReport(cur.id, boxLabel(cur.card));
+  });
+  $("report-cancel").addEventListener("click", () => dialog.close());
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!reportId) return;
+    const f = new FormData(form);
+    const res = await fetch(`${import.meta.env.BASE_URL}api/report`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: reportId, category: f.get("category"), note: f.get("note") }),
+    }).catch(() => null);
+    if (res?.ok) {
+      status.textContent = "Thanks. The report was sent for review.";
+      status.classList.remove("error");
+      form.reset();
+      window.setTimeout(() => dialog.close(), 1200);
+    } else {
+      status.textContent = "Couldn't send the report. Try again.";
+      status.classList.add("error");
+    }
+  });
 }
 
 // ---------- take the box ----------
@@ -555,7 +612,10 @@ async function main() {
   $("demo-flag").textContent = live
     ? "Testnet preview: no real money yet."
     : "Preview: demo data, no payments yet.";
-  if (live) setupTakeDialog();
+  if (live) {
+    setupTakeDialog();
+    setupReports();
+  }
   new ResizeObserver(() => {
     resize();
     tick();

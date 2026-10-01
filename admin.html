@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Bounce Board admin</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <main class="admin">
+      <h1>Bounce Board admin</h1>
+      <form id="token-form" class="side">
+        <label>Admin token
+          <input id="token" type="password" autocomplete="off" placeholder="paste from data.nosync/bounce-admin-token.txt" />
+        </label>
+        <p class="fine">Kept only for this browser tab (sessionStorage).</p>
+        <button class="take" type="submit">Unlock</button>
+      </form>
+      <section id="panel" hidden>
+        <div class="side">
+          <h2>Now holding</h2>
+          <div id="current"></div>
+          <label>Reason for removal
+            <input id="kill-reason" maxlength="200" placeholder="for example: scam, fake CA" />
+          </label>
+          <button class="take danger" type="button" id="kill">Kill switch: remove current holder</button>
+          <p class="fine">Next queued buyer takes over now. If nobody is queued, the previous holder comes back.</p>
+        </div>
+        <div class="side">
+          <h2>Queue</h2>
+          <ol id="queue" class="list"></ol>
+        </div>
+        <div class="side">
+          <h2>Reports</h2>
+          <ol id="reports" class="list"></ol>
+        </div>
+        <p class="take-status" id="admin-status" role="status" aria-live="polite"></p>
+      </section>
+    </main>
+    <script type="module" src="/src/admin.ts"></script>
+  </body>
+</html>

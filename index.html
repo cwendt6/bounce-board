@@ -26,6 +26,9 @@
           <div class="corner-toast" id="corner-toast" aria-live="polite"></div>
         </div>
         <div class="now-holding" id="now-holding" aria-live="polite"></div>
+        <div class="report-row">
+          <button type="button" class="link-button" id="report-current" hidden>Report this listing</button>
+        </div>
       </section>
 
       <aside class="side queue" aria-label="Queue">
@@ -103,6 +106,30 @@
         <div class="take-actions">
           <button type="button" class="secondary" id="take-cancel">Cancel</button>
           <button type="submit" class="take" id="take-submit">Pay $1 USDC</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="report-dialog" class="take-dialog" aria-labelledby="report-title">
+      <form id="report-form" method="dialog">
+        <h2 id="report-title">Report a listing</h2>
+        <p class="fine" id="report-target"></p>
+        <label>What's wrong?
+          <select name="category">
+            <option value="scam">Scam or fake token</option>
+            <option value="impersonation">Impersonation</option>
+            <option value="nsfw">Adult or graphic content</option>
+            <option value="hate">Hate or harassment</option>
+            <option value="other">Something else</option>
+          </select>
+        </label>
+        <label>Details (optional)
+          <input name="note" maxlength="200" autocomplete="off" />
+        </label>
+        <p class="take-status" id="report-status" role="status" aria-live="polite"></p>
+        <div class="take-actions">
+          <button type="button" class="secondary" id="report-cancel">Cancel</button>
+          <button type="submit" class="take" id="report-submit">Send report</button>
         </div>
       </form>
     </dialog>

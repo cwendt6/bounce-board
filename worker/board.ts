@@ -7,11 +7,13 @@
  */
 import { DurableObject } from "cloudflare:workers";
 import { holderKey, holderLabel } from "../src/core/leaderboard";
+import { cornerHits, initialPhase } from "../src/core/motion";
 import {
   advance,
   type BoardState,
   estimatedStarts,
   type Pending,
+  seedFor,
   type Takeover,
 } from "../src/core/queue";
 import type { BoardCard } from "./card";
@@ -43,6 +45,16 @@ CREATE TABLE IF NOT EXISTS verdicts (
   ok INTEGER NOT NULL,
   reason TEXT,
   at INTEGER NOT NULL
+);
+-- Viewer reports. Reporters are stored only as a hash, to drop duplicate reports.
+CREATE TABLE IF NOT EXISTS reports (
+  id TEXT PRIMARY KEY,
+  takeover_id TEXT NOT NULL,
+  category TEXT NOT NULL,
+  note TEXT NOT NULL,
+  reporter TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  UNIQUE (takeover_id, reporter)
 );
 CREATE TABLE IF NOT EXISTS logos (
   takeover_id TEXT PRIMARY KEY,
@@ -106,6 +118,21 @@ export class Board extends DurableObject<Env> {
     super(ctx, env);
     this.sql = ctx.storage.sql;
     this.sql.exec(SCHEMA);
+    // Columns added after launch. SQLite has no ADD COLUMN IF NOT EXISTS, so check first.
+    const cols = new Set(
+      this.sql
+        .exec<{ name: string }>("PRAGMA table_info(takeovers)")
+        .toArray()
+        .map((c) => c.name),
+    );
+    if (!cols.has("removed")) {
+      this.sql.exec("ALTER TABLE takeovers ADD COLUMN removed INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!cols.has("restored")) {
+      this.sql.exec("ALTER TABLE takeovers ADD COLUMN restored INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!cols.has("removed_reason"))
+      this.sql.exec("ALTER TABLE takeovers ADD COLUMN removed_reason TEXT");
   }
 
   // ---------- state ----------
@@ -293,11 +320,156 @@ export class Board extends DurableObject<Env> {
       .map((r) => ({ ...r }) as Sale);
   }
 
+  private isRestored(id: string): boolean {
+    return (
+      this.sql
+        .exec<{ restored: number }>("SELECT restored FROM takeovers WHERE id = ?", id)
+        .toArray()[0]?.restored === 1
+    );
+  }
+
+  // ---------- reports ----------
+
+  /** Record a viewer report. One report per reporter per takeover; returns false if unknown id. */
+  report(takeoverId: string, category: string, note: string, reporter: string): boolean {
+    const exists =
+      this.sql.exec("SELECT 1 FROM takeovers WHERE id = ?", takeoverId).toArray().length > 0;
+    if (!exists) return false;
+    this.sql.exec(
+      "INSERT OR IGNORE INTO reports (id, takeover_id, category, note, reporter, at) VALUES (?, ?, ?, ?, ?, ?)",
+      crypto.randomUUID(),
+      takeoverId,
+      category,
+      note,
+      reporter,
+      Date.now(),
+    );
+    return true;
+  }
+
+  /** Reports grouped by takeover, most reported first, with the card and its status. */
+  reports(): {
+    takeoverId: string;
+    card: BoardCard;
+    status: string;
+    removed: boolean;
+    count: number;
+    categories: string[];
+    notes: string[];
+    lastAt: number;
+  }[] {
+    const rows = this.sql
+      .exec<{
+        takeover_id: string;
+        category: string;
+        note: string;
+        at: number;
+        card: string;
+        status: string;
+        removed: number;
+      }>(
+        `SELECT r.takeover_id, r.category, r.note, r.at, t.card, t.status, t.removed
+           FROM reports r JOIN takeovers t ON t.id = r.takeover_id ORDER BY r.at DESC`,
+      )
+      .toArray();
+    const by = new Map<string, ReturnType<Board["reports"]>[number]>();
+    for (const r of rows) {
+      const e = by.get(r.takeover_id) ?? {
+        takeoverId: r.takeover_id,
+        card: JSON.parse(r.card) as BoardCard,
+        status: r.status,
+        removed: r.removed === 1,
+        count: 0,
+        categories: [],
+        notes: [],
+        lastAt: r.at,
+      };
+      e.count++;
+      if (!e.categories.includes(r.category)) e.categories.push(r.category);
+      if (r.note) e.notes.push(r.note);
+      by.set(r.takeover_id, e);
+    }
+    return [...by.values()].sort((a, b) => b.count - a.count || b.lastAt - a.lastAt);
+  }
+
+  // ---------- admin ----------
+
+  /**
+   * Kill switch: remove the current holder now. The next queued buyer takes over immediately;
+   * with an empty queue, the previous holder's card comes back (marked restored, not counted).
+   */
+  async kill(reason: string): Promise<Snapshot> {
+    const now = Date.now();
+    const cur = this.load().current;
+    if (!cur) return this.snapshot();
+    this.ctx.storage.transactionSync(() => {
+      const corners = cornerHits(initialPhase(cur.seed), 0, (now - cur.startMs) / 1000).length;
+      this.sql.exec(
+        `UPDATE takeovers SET status = 'finished', end_ms = ?, corners = ?, removed = 1, removed_reason = ?
+          WHERE id = ?`,
+        now,
+        corners,
+        reason,
+        cur.id,
+      );
+      const next = this.rows("queued")[0];
+      if (next) {
+        this.sql.exec(
+          "UPDATE takeovers SET status = 'current', start_ms = ?, seed = ? WHERE id = ?",
+          now,
+          seedFor(next.id),
+          next.id,
+        );
+        return;
+      }
+      const prev = this.sql
+        .exec<{ card: string }>(
+          `SELECT card FROM takeovers WHERE status = 'finished' AND removed = 0 AND id != ?
+            ORDER BY end_ms DESC LIMIT 1`,
+          cur.id,
+        )
+        .toArray()[0];
+      if (prev) {
+        const id = crypto.randomUUID();
+        this.sql.exec(
+          `INSERT INTO takeovers (id, status, paid_at, start_ms, seed, card, restored)
+           VALUES (?, 'current', ?, ?, ?, ?, 1)`,
+          id,
+          now,
+          now,
+          seedFor(id),
+          prev.card,
+        );
+      }
+    });
+    await this.step();
+    return this.snapshot();
+  }
+
+  /** Remove a takeover: the current one (same as kill) or a queued one. */
+  async remove(id: string, reason: string): Promise<{ removed: boolean; snapshot: Snapshot }> {
+    const cur = this.load().current;
+    if (cur?.id === id) return { removed: true, snapshot: await this.kill(reason) };
+    const now = Date.now();
+    const changed = this.sql.exec(
+      `UPDATE takeovers SET status = 'finished', start_ms = ?, end_ms = ?, corners = 0, removed = 1,
+              removed_reason = ? WHERE id = ? AND status = 'queued'`,
+      now,
+      now,
+      reason,
+      id,
+    ).rowsWritten;
+    await this.step();
+    return { removed: changed > 0, snapshot: this.snapshot() };
+  }
+
   snapshot(): Snapshot {
     const state = this.load();
     const est = estimatedStarts(state);
     const finished = this.sql
-      .exec<Row>("SELECT * FROM takeovers WHERE status = 'finished' ORDER BY end_ms DESC")
+      .exec<Row>(
+        "SELECT * FROM takeovers WHERE status = 'finished' AND removed = 0 AND restored = 0 ORDER BY end_ms DESC",
+      )
       .toArray()
       .map((r) => ({
         id: r.id,
@@ -316,7 +488,8 @@ export class Board extends DurableObject<Env> {
       e.corners += r.corners;
       corners.set(k, e);
     }
-    if (state.current) holders.add(holderKey(state.current.card));
+    const curRestored = state.current ? this.isRestored(state.current.id) : false;
+    if (state.current && !curRestored) holders.add(holderKey(state.current.card));
 
     return {
       serverNow: Date.now(),
@@ -339,7 +512,10 @@ export class Board extends DurableObject<Env> {
         .map((r) => ({ label: holderLabel(r.card), ms: r.endMs - r.startMs }))
         .sort((a, b) => b.ms - a.ms)
         .slice(0, 5),
-      stats: { takeovers: finished.length + (state.current ? 1 : 0), uniqueHolders: holders.size },
+      stats: {
+        takeovers: finished.length + (state.current && !curRestored ? 1 : 0),
+        uniqueHolders: holders.size,
+      },
     };
   }
 
