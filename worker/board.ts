@@ -6,6 +6,7 @@
  * handover, and pushes a fresh snapshot to all WebSockets.
  */
 import { DurableObject } from "cloudflare:workers";
+import { holderKey, holderLabel } from "../src/core/leaderboard";
 import {
   advance,
   type BoardState,
@@ -70,13 +71,14 @@ export interface Snapshot {
   current: Takeover<BoardCard> | null;
   queue: { id: string; card: BoardCard; paidAtMs: number; estStartMs: number }[];
   recent: Reign[];
-  cornerClub: { label: string; corners: number }[];
+  /** Finished reigns only, top 20. Pages merge in the live reign (src/core/leaderboard.ts). */
+  cornerClub: { key: string; label: string; corners: number }[];
+  /** Corners the current holder earned in earlier, finished reigns. */
+  currentPriorCorners: number;
+  /** Finished reigns only, top 5. */
   longest: { label: string; ms: number }[];
   stats: { takeovers: number; uniqueHolders: number };
 }
-
-const holderKey = (c: BoardCard) => (c.ticker ? `$${c.ticker}` : c.name).toLowerCase();
-const holderLabel = (c: BoardCard) => (c.ticker ? `$${c.ticker}` : c.name);
 
 export class Board extends DurableObject<Env> {
   private sql: SqlStorage;
@@ -218,12 +220,12 @@ export class Board extends DurableObject<Env> {
         corners: r.corners as number,
       }));
 
-    const corners = new Map<string, { label: string; corners: number }>();
+    const corners = new Map<string, { key: string; label: string; corners: number }>();
     const holders = new Set<string>();
     for (const r of finished) {
       holders.add(holderKey(r.card));
       const k = holderKey(r.card);
-      const e = corners.get(k) ?? { label: holderLabel(r.card), corners: 0 };
+      const e = corners.get(k) ?? { key: k, label: holderLabel(r.card), corners: 0 };
       e.corners += r.corners;
       corners.set(k, e);
     }
@@ -242,7 +244,10 @@ export class Board extends DurableObject<Env> {
       cornerClub: [...corners.values()]
         .filter((c) => c.corners > 0)
         .sort((a, b) => b.corners - a.corners)
-        .slice(0, 5),
+        .slice(0, 20),
+      currentPriorCorners: state.current
+        ? (corners.get(holderKey(state.current.card))?.corners ?? 0)
+        : 0,
       longest: finished
         .map((r) => ({ label: holderLabel(r.card), ms: r.endMs - r.startMs }))
         .sort((a, b) => b.ms - a.ms)

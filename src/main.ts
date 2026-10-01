@@ -267,7 +267,26 @@ function renderQueue(v: View) {
   );
 }
 
+let lastBoardsKey = "";
+let lastRecentKey = "";
+
+/**
+ * Redraw the boards only when their content changes. The recent-holders list (which has copy
+ * buttons) has its own check, so the live reign's ticking clock doesn't wipe "copied" feedback.
+ */
 function renderBoards(v: View) {
+  const recentKey = JSON.stringify(v.recent);
+  if (recentKey !== lastRecentKey) {
+    lastRecentKey = recentKey;
+    renderRecent(v);
+  }
+  const key = JSON.stringify([
+    v.stats,
+    v.cornerClub,
+    v.longest.map((l) => [l.label, Math.floor(l.ms / 1000)]),
+  ]);
+  if (key === lastBoardsKey) return;
+  lastBoardsKey = key;
   $("stat-takeovers").textContent = v.stats.takeovers.toLocaleString("en-US");
   $("stat-holders").textContent = v.stats.uniqueHolders.toLocaleString("en-US");
   const club = v.cornerClub.map((c) =>
@@ -288,6 +307,9 @@ function renderBoards(v: View) {
     ),
   );
   $("longest").replaceChildren(...(longest.length ? longest : [emptyRow("No reigns yet.")]));
+}
+
+function renderRecent(v: View) {
   const recent = v.recent.map((r) =>
     holderRow(r.card, [
       h(
@@ -360,13 +382,12 @@ function tick() {
   drawBox(cur?.card ?? EMPTY_CARD, phase, cur ? t : t % 3600, !cur, performance.now() < flashUntil);
 
   const sec = Math.floor(v.now / 1000);
+  // Once a second: the queue countdowns and the leaderboards, which include the live reign.
   if (sec !== lastSidebarSecond || boardsDirty) {
     lastSidebarSecond = sec;
+    boardsDirty = false;
     renderQueue(v);
     renderNowHolding(v, corners);
-  }
-  if (boardsDirty) {
-    boardsDirty = false;
     renderBoards(v);
   }
 }

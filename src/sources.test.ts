@@ -38,6 +38,7 @@ describe("views", () => {
       queue: [{ id: "y", card, estStartMs: 61_001 }],
       recent: [{ id: "z", card, startMs: 0, endMs: 90_000, corners: 1 }],
       cornerClub: [],
+      currentPriorCorners: 0,
       longest: [],
       stats: { takeovers: 2, uniqueHolders: 1 },
     };
@@ -45,5 +46,7 @@ describe("views", () => {
     expect(v.current?.endMs).toBeNull();
     expect(v.queue[0].startMs).toBe(61_001);
     expect(v.recent[0]).toEqual({ card, heldMs: 90_000, corners: 1 });
+    // The reign in progress (started at 1, now 10) shows in the longest list.
+    expect(v.longest).toEqual([{ label: "A", ms: 9 }]);
   });
 });
