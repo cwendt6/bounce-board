@@ -31,7 +31,7 @@
       <aside class="side queue" aria-label="Queue">
         <h2>Up next</h2>
         <ol id="queue" class="list"></ol>
-        <button class="take" type="button" disabled title="Payments arrive in milestone 2 (testnet)">
+        <button class="take" id="take-open" type="button" disabled title="Payments are live on the testnet site">
           Take the box ($1)
         </button>
         <p class="fine">Payments: USDC on Base, coming soon.</p>
@@ -50,6 +50,47 @@
         <ol id="recent" class="list"></ol>
       </aside>
     </main>
+
+    <dialog id="take-dialog" class="take-dialog" aria-labelledby="take-title">
+      <form id="take-form" method="dialog" novalidate>
+        <h2 id="take-title">Take the box</h2>
+        <p class="fine">$1 in USDC on Base. Your card shows in the box until the next buyer takes over (at least 60 seconds).</p>
+        <label>Display name <span class="req">required</span>
+          <input name="name" required maxlength="32" autocomplete="off" />
+        </label>
+        <label>Link <span class="req">required, https</span>
+          <input name="link" type="url" required maxlength="200" placeholder="https://" />
+        </label>
+        <label>One-line description
+          <input name="description" maxlength="120" autocomplete="off" />
+        </label>
+        <label>X handle
+          <input name="x" maxlength="16" placeholder="@handle" autocomplete="off" />
+        </label>
+        <details class="token-fields">
+          <summary>This is a token</summary>
+          <label>Ticker
+            <input name="ticker" maxlength="13" placeholder="$TICKER" autocomplete="off" />
+          </label>
+          <label>Chain
+            <select name="chain">
+              <option value="base">Base</option>
+              <option value="solana">Solana</option>
+              <option value="ethereum">Ethereum</option>
+            </select>
+          </label>
+          <label>Contract address
+            <input name="contract" maxlength="64" autocomplete="off" spellcheck="false" />
+          </label>
+        </details>
+        <p class="fine">Paid placement, not an endorsement and not financial advice.</p>
+        <p class="take-status" id="take-status" role="status" aria-live="polite"></p>
+        <div class="take-actions">
+          <button type="button" class="secondary" id="take-cancel">Cancel</button>
+          <button type="submit" class="take" id="take-submit">Pay $1 USDC</button>
+        </div>
+      </form>
+    </dialog>
 
     <footer class="foot">
       <p>Paid placement. Not an endorsement. Not financial advice.</p>

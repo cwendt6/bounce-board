@@ -15,6 +15,7 @@ import {
 } from "../src/core/queue";
 import type { BoardCard } from "./card";
 import type { Env } from "./env";
+import type { Sale } from "./pay";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS takeovers (
@@ -155,6 +156,52 @@ export class Board extends DurableObject<Env> {
     );
     await this.step();
     return this.snapshot();
+  }
+
+  /**
+   * Record a settled sale and queue its takeover in one transaction, so a sale never exists
+   * without its takeover. A repeated tx hash is a no-op and returns duplicate: true.
+   */
+  async enqueuePaid(
+    sale: Sale,
+    card: BoardCard,
+  ): Promise<{ duplicate: boolean; snapshot: Snapshot }> {
+    const seen = this.sql.exec("SELECT 1 FROM sales WHERE tx_hash = ?", sale.tx_hash).toArray();
+    if (seen.length) return { duplicate: true, snapshot: this.snapshot() };
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec(
+        `INSERT INTO sales (id, takeover_id, network, chain, asset, amount, usd_value, tx_hash,
+           payer, receiver, received_at, facilitator) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        sale.id,
+        sale.takeover_id,
+        sale.network,
+        sale.chain,
+        sale.asset,
+        sale.amount,
+        sale.usd_value,
+        sale.tx_hash,
+        sale.payer,
+        sale.receiver,
+        sale.received_at,
+        sale.facilitator,
+      );
+      this.sql.exec(
+        "INSERT INTO takeovers (id, status, paid_at, card) VALUES (?, 'queued', ?, ?)",
+        sale.takeover_id,
+        sale.received_at,
+        JSON.stringify(card),
+      );
+    });
+    await this.step();
+    return { duplicate: false, snapshot: this.snapshot() };
+  }
+
+  /** All sales, oldest first, for the CSV export. */
+  sales(): Sale[] {
+    return this.sql
+      .exec<Sale & Record<string, SqlStorageValue>>("SELECT * FROM sales ORDER BY received_at, id")
+      .toArray()
+      .map((r) => ({ ...r }) as Sale);
   }
 
   snapshot(): Snapshot {

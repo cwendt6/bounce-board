@@ -30,7 +30,16 @@ npx wrangler login                                  # once
 npm run build && npx wrangler deploy                # set CLOUDFLARE_ACCOUNT_ID in your env
 ```
 
-For local testing without payments, create `.dev.vars` with `DEV_FAKE_PAY=true`. Then `POST /api/dev/take` with a card queues a takeover. The switch is off in every deployed environment.
+For local testing, create `.dev.vars`:
+
+```
+DEV_FAKE_PAY=true
+PAY_TO_ADDRESS=0xYourTestnetReceivingAddress
+X402_NETWORK=eip155:84532
+FACILITATOR_URL=https://x402.org/facilitator
+```
+
+With `DEV_FAKE_PAY=true`, `POST /api/dev/take` queues a takeover with no payment. The switch is off in every deployed environment.
 
 ## Roadmap
 

@@ -17,7 +17,15 @@ export default defineConfig({
         plugins: [
           cloudflareTest({
             wrangler: { configPath: "./wrangler.jsonc" },
-            miniflare: { bindings: { DEV_FAKE_PAY: "true" } },
+            // Pinned so a local .dev.vars can't leak in: no receiving address means no
+            // facilitator calls, keeping tests offline.
+            miniflare: {
+              bindings: {
+                DEV_FAKE_PAY: "true",
+                ADMIN_TOKEN: "test-admin-token",
+                PAY_TO_ADDRESS: "",
+              },
+            },
           }),
         ],
         test: { name: "worker", include: ["worker/**/*.worker.test.ts"] },

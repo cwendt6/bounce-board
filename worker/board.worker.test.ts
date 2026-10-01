@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { MIN_HOLD_MS } from "../src/core/queue";
 import type { Snapshot } from "./board";
 import { validateCard } from "./card";
+import type { Sale } from "./pay";
 
 const card = (name: string) => {
   const r = validateCard({ name, description: "test", link: "https://example.com" });
@@ -92,5 +93,49 @@ describe("board API", () => {
 
   it("hides the dev endpoint unless enabled", async () => {
     expect(env.DEV_FAKE_PAY).toBe("true");
+  });
+
+  it("refuses /api/take when no receiving address is configured", async () => {
+    const res = await SELF.fetch("https://board.test/api/take", {
+      method: "POST",
+      body: JSON.stringify({ name: "Lamp Oil", link: "https://example.com" }),
+    });
+    expect(res.status).toBe(503);
+  });
+
+  it("records a paid takeover once per transaction", async () => {
+    const b = stub("paid");
+    const sale: Sale = {
+      id: "s1",
+      takeover_id: "s1",
+      network: "testnet",
+      chain: "base",
+      asset: "USDC",
+      amount: "1.000000",
+      usd_value: "1.00",
+      tx_hash: "0xfeed",
+      payer: "0xpayer",
+      receiver: "0xreceiver",
+      received_at: Date.now(),
+      facilitator: "x402.org",
+    };
+    const first = await b.enqueuePaid(sale, card("Paid Holder"));
+    expect(first.duplicate).toBe(false);
+    expect(first.snapshot.current?.id).toBe("s1");
+    const again = await b.enqueuePaid({ ...sale, id: "s2", takeover_id: "s2" }, card("Replay"));
+    expect(again.duplicate).toBe(true);
+    expect(again.snapshot.queue).toHaveLength(0);
+    expect(await b.sales()).toHaveLength(1);
+  });
+
+  it("guards the sales export with the admin token", async () => {
+    const url = "https://board.test/api/admin/sales.csv";
+    expect((await SELF.fetch(url)).status).toBe(401);
+    expect((await SELF.fetch(url, { headers: { Authorization: "Bearer wrong" } })).status).toBe(
+      401,
+    );
+    const ok = await SELF.fetch(url, { headers: { Authorization: "Bearer test-admin-token" } });
+    expect(ok.status).toBe(200);
+    expect((await ok.text()).split("\n")[0]).toMatch(/^id,takeover_id,network/);
   });
 });

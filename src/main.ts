@@ -397,6 +397,77 @@ function start() {
   }
 }
 
+// ---------- take the box ----------
+
+const EXPLORER_TX = "https://sepolia.basescan.org/tx/";
+
+function setupTakeDialog() {
+  const open = $("take-open") as HTMLButtonElement;
+  const dialog = $("take-dialog") as HTMLDialogElement;
+  const form = $("take-form") as HTMLFormElement;
+  const submit = $("take-submit") as HTMLButtonElement;
+  const status = $("take-status");
+  open.disabled = false;
+  open.title = "";
+  const note = document.querySelector(".queue .fine");
+  if (note) note.textContent = "Payments: USDC on Base Sepolia (testnet).";
+
+  const say = (msg: string, error = false) => {
+    status.replaceChildren(msg);
+    status.classList.toggle("error", error);
+  };
+
+  open.addEventListener("click", () => {
+    say("");
+    dialog.showModal();
+  });
+  $("take-cancel").addEventListener("click", () => dialog.close());
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = new FormData(form);
+    const get = (k: string) => String(f.get(k) ?? "").trim();
+    const isToken =
+      (form.querySelector(".token-fields") as HTMLDetailsElement).open && get("ticker");
+    const card = {
+      name: get("name"),
+      link: get("link"),
+      description: get("description"),
+      x: get("x") || undefined,
+      ...(isToken ? { ticker: get("ticker"), chain: get("chain"), contract: get("contract") } : {}),
+    };
+    if (!card.name || !card.link) {
+      say("Name and link are required.", true);
+      return;
+    }
+    submit.disabled = true;
+    try {
+      const { takeTheBox } = await import("./pay-client");
+      const { tx } = await takeTheBox(`${import.meta.env.BASE_URL}api/take`, card, (m) => say(m));
+      status.replaceChildren(
+        "Paid. You're in the queue. ",
+        h(
+          "a",
+          { href: `${EXPLORER_TX}${tx}`, target: "_blank", rel: "noopener noreferrer" },
+          "View transaction",
+        ),
+      );
+      status.classList.remove("error");
+      form.reset();
+    } catch (err) {
+      const code = (err as { code?: number }).code;
+      say(
+        code === 4001
+          ? "Cancelled in your wallet."
+          : (err as Error).message || "Something went wrong.",
+        true,
+      );
+    } finally {
+      submit.disabled = false;
+    }
+  });
+}
+
 async function main() {
   source = await pickSource(() => {
     boardsDirty = true;
@@ -405,6 +476,7 @@ async function main() {
   $("demo-flag").textContent = live
     ? "Testnet preview: no real money yet."
     : "Preview: demo data, no payments yet.";
+  if (live) setupTakeDialog();
   new ResizeObserver(() => {
     resize();
     tick();

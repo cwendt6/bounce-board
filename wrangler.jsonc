@@ -10,6 +10,10 @@
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Board"] }],
   "vars": {
     "PRICE_USD": "1",
+    // Base Sepolia (testnet). Mainnet (eip155:8453) needs Cole's approval and a CDP facilitator.
+    "X402_NETWORK": "eip155:84532",
+    "FACILITATOR_URL": "https://x402.org/facilitator",
+    // PAY_TO_ADDRESS is set outside the repo: .dev.vars locally, `wrangler secret put` in prod.
     // Local testing only: lets POST /api/dev/take queue a takeover with no payment.
     // Never true in a deployed environment.
     "DEV_FAKE_PAY": "false"
