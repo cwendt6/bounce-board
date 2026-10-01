@@ -17,6 +17,9 @@ export default defineConfig({
         plugins: [
           cloudflareTest({
             wrangler: { configPath: "./wrangler.jsonc" },
+            // Never open a remote session to Cloudflare from tests (the AI binding would
+            // otherwise try, using whatever account wrangler is logged into). CI has no creds.
+            remoteBindings: false,
             // Pinned so a local .dev.vars can't leak in: no receiving address means no
             // facilitator calls, keeping tests offline.
             miniflare: {
@@ -24,6 +27,7 @@ export default defineConfig({
                 DEV_FAKE_PAY: "true",
                 ADMIN_TOKEN: "test-admin-token",
                 PAY_TO_ADDRESS: "",
+                MODERATION: "off",
               },
             },
           }),

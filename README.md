@@ -37,6 +37,7 @@ DEV_FAKE_PAY=true
 PAY_TO_ADDRESS=0xYourTestnetReceivingAddress
 X402_NETWORK=eip155:84532
 FACILITATOR_URL=https://x402.org/facilitator
+# MODERATION=off   # skip Workers AI when offline
 ```
 
 With `DEV_FAKE_PAY=true`, `POST /api/dev/take` queues a takeover with no payment. The switch is off in every deployed environment.

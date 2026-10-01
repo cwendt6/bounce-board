@@ -38,6 +38,16 @@ If settlement succeeds but queueing fails, the server logs `SETTLED BUT NOT QUEU
 
 Config: `X402_NETWORK` and `FACILITATOR_URL` are vars in `wrangler.jsonc`. `PAY_TO_ADDRESS` is set outside the repo (`.dev.vars` locally, `wrangler secret put PAY_TO_ADDRESS` in production). `GET /api/admin/sales.csv` needs `Authorization: Bearer <ADMIN_TOKEN>` and returns 404 until `ADMIN_TOKEN` is set.
 
+## Moderation
+
+- **When:** every card and logo is checked before a price is quoted (`POST /api/take` and the dev endpoint), so nobody pays for a takeover that would be rejected.
+- **Text:** Llama Guard 3 (`@cf/meta/llama-guard-3-8b`) classifies the card into the MLCommons hazard categories (S1-S14). Any hazard rejects it, with the category named.
+- **Logo:** Mistral Small 3.1 (`@cf/mistralai/mistral-small-3.1-24b-instruct`) is asked for a one-word SAFE/UNSAFE answer covering nudity, gore, hate symbols, extremism and drugs.
+- **Fails closed:** a quota error, an outage or an unexpected answer returns 503 ("try again later, you have not been charged").
+- **Cache:** definitive verdicts are cached for 24 hours in the Durable Object by a SHA-256 of the card and logo, so the paid retry of the same card doesn't re-run the models. "Unavailable" is never cached.
+- **Cost:** Workers AI free plan, 10,000 neurons a day; past that, calls error rather than bill. About 45 neurons per submission (Llama Guard about 30, vision about 15), so about 200 submissions a day.
+- `MODERATION=off` exists only for tests and offline dev. Deployed environments use `workers-ai`.
+
 ## Logos
 
 - **In the browser** (`src/logo-input.ts`): the buyer picks a PNG, JPG or WebP up to 500 KB. The page center-crops it to a square and re-encodes it to a 256x256 WebP on a canvas, which drops metadata and anything riding along in the file.

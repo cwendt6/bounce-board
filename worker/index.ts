@@ -5,9 +5,16 @@ import {
 } from "@x402/core/http";
 import { Hono } from "hono";
 import { Board } from "./board";
-import { validateCard } from "./card";
+import { type BoardCard, validateCard } from "./card";
 import type { Env } from "./env";
 import { parseLogo } from "./logo";
+import {
+  allowAll,
+  type Moderator,
+  type Verdict,
+  verdictKey,
+  WorkersAiModerator,
+} from "./moderation";
 import { type Gateway, type PayConfig, processTake, salesCsv, X402Gateway } from "./pay";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -34,12 +41,35 @@ app.post("/api/dev/take", async (c) => {
     const errors = [...(result.ok ? [] : result.errors), ...(logo.ok ? [] : [logo.error])];
     return c.json({ errors }, 400);
   }
+  const verdict = await moderate(c.env, result.card, logo.logo ? String(body.logo) : null);
+  if (verdict.ok === "unavailable")
+    return c.json({ error: "Moderation is unavailable right now." }, 503);
+  if (!verdict.ok) return c.json({ errors: [`rejected: ${verdict.reason}`] }, 400);
   const snapshot = await board(c.env).enqueue(
     { id: crypto.randomUUID(), paidAtMs: Date.now(), card: result.card },
     logo.logo,
   );
   return c.json(snapshot, 201);
 });
+
+function moderator(env: Env): Moderator {
+  if (env.MODERATION === "off") return allowAll;
+  if (!env.AI) return { check: async () => ({ ok: "unavailable" }) };
+  return new WorkersAiModerator(env.AI);
+}
+
+/** Moderate with a 24 h cache in the Durable Object. "Unavailable" is never cached. */
+async function moderate(env: Env, card: BoardCard, logoDataUrl: string | null): Promise<Verdict> {
+  const key = await verdictKey(card, logoDataUrl);
+  const b = board(env);
+  const cached = await b.verdict(key);
+  if (cached)
+    return cached.ok ? { ok: true } : { ok: false, reason: cached.reason ?? "content flagged" };
+  const v = await moderator(env).check(card, logoDataUrl);
+  if (v.ok === true) await b.saveVerdict(key, true, null);
+  else if (v.ok === false) await b.saveVerdict(key, false, v.reason);
+  return v;
+}
 
 // One gateway per isolate and config, so the facilitator handshake happens once.
 let cached: { key: string; gateway: Gateway } | null = null;
@@ -73,6 +103,7 @@ app.post("/api/take", async (c) => {
         now: () => Date.now(),
         newId: () => crypto.randomUUID(),
         decodePayment: decodePaymentSignatureHeader,
+        moderate: (card, logo) => moderate(c.env, card, logo),
       },
       body,
       c.req.header("PAYMENT-SIGNATURE") ?? c.req.header("X-PAYMENT") ?? null,
@@ -84,6 +115,7 @@ app.post("/api/take", async (c) => {
   }
 
   if (result.status === 400) return c.json(result.body, 400);
+  if (result.status === 503) return c.json(result.body, 503);
   if (result.status === 402) {
     c.header("PAYMENT-REQUIRED", encodePaymentRequiredHeader(result.body));
     c.header("Cache-Control", "no-store");

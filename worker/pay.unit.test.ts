@@ -62,6 +62,7 @@ function deps(gateway: Gateway, payload: Partial<PaymentPayload> = {}): TakeDeps
     now: () => 1_790_000_000_000,
     newId: () => "sale-1",
     decodePayment: () => ({ x402Version: 2, accepted: req, payload: {}, ...payload }),
+    moderate: async () => ({ ok: true }),
   };
 }
 
@@ -70,6 +71,27 @@ describe("processTake", () => {
     const g = fake();
     const r = await processTake(deps(g), { name: "" }, null, "u");
     expect(r.status).toBe(400);
+    expect(g.calls).toEqual([]);
+  });
+
+  it("rejects a flagged card before quoting a price", async () => {
+    const g = fake();
+    const d = {
+      ...deps(g),
+      moderate: async () => ({ ok: false as const, reason: "content flagged: hate" }),
+    };
+    const r = await processTake(d, card, null, "u");
+    expect(r.status).toBe(400);
+    expect(r.status === 400 && r.body.errors[0]).toMatch(/hate/);
+    expect(g.calls).toEqual([]);
+  });
+
+  it("asks the buyer to retry, uncharged, when moderation is unavailable", async () => {
+    const g = fake();
+    const d = { ...deps(g), moderate: async () => ({ ok: "unavailable" as const }) };
+    const r = await processTake(d, card, "x", "u");
+    expect(r.status).toBe(503);
+    expect(r.status === 503 && r.body.error).toMatch(/not been charged/);
     expect(g.calls).toEqual([]);
   });
 
