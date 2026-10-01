@@ -2,7 +2,8 @@
 
 One box bounces around an old classroom projector screen. $1 in USDC puts your name, brand or token in the box. You hold it until the next buyer in the queue takes over. Hit a corner and you join the Corner Club.
 
-**Preview:** https://cwendt6.github.io/bounce-board/ (demo data, no payments yet).
+**Live (testnet, no real money yet):** https://bounce-board.colewendt6.workers.dev
+**Static demo:** https://cwendt6.github.io/bounce-board/ (invented holders, no server)
 
 ## How it works
 
@@ -18,6 +19,13 @@ npm run dev          # page only, demo data: http://localhost:5173
 npm run dev:worker   # page + Worker + Durable Object: http://localhost:8787
 npm run build && npm test
 npm run lint && npm run typecheck
+```
+
+## Deploy
+
+```bash
+npx wrangler login                                  # once
+npm run build && npx wrangler deploy                # set CLOUDFLARE_ACCOUNT_ID in your env
 ```
 
 For local testing without payments, create `.dev.vars` with `DEV_FAKE_PAY=true`. Then `POST /api/dev/take` with a card queues a takeover. The switch is off in every deployed environment.
