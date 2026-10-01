@@ -83,7 +83,7 @@ export function snapshotToView(s: Snapshot, now: number): View {
     mode: "live",
     now,
     current: s.current ? { ...s.current, endMs: null } : null,
-    queue: s.queue.map((q) => ({ card: q.card, startMs: q.estStartMs })),
+    queue: s.queue.map((q) => ({ id: q.id, card: q.card, startMs: q.estStartMs })),
     recent: s.recent.map((r) => ({
       card: r.card,
       heldMs: r.endMs - r.startMs,

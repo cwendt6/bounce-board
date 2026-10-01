@@ -200,12 +200,76 @@ function sameToken(a: string, b: string): boolean {
   return diff === 0;
 }
 
+export const REPORT_CATEGORIES = ["scam", "nsfw", "impersonation", "hate", "other"] as const;
+
+/** Anyone can report a takeover. Reporters are stored only as a hash (dedupe, no raw IPs). */
+app.post("/api/report", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as {
+    id?: unknown;
+    category?: unknown;
+    note?: unknown;
+  } | null;
+  const id = typeof body?.id === "string" ? body.id : "";
+  const category = typeof body?.category === "string" ? body.category : "";
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control characters
+  const note = (typeof body?.note === "string" ? body.note : "")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .trim();
+  if (!/^[0-9a-f-]{36}$/.test(id)) return c.json({ error: "unknown takeover" }, 404);
+  if (!(REPORT_CATEGORIES as readonly string[]).includes(category)) {
+    return c.json({ error: `category: one of ${REPORT_CATEGORIES.join(", ")}` }, 400);
+  }
+  if (note.length > 200) return c.json({ error: "note: at most 200 characters" }, 400);
+  const ip = c.req.header("CF-Connecting-IP") ?? "unknown";
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${ip}:${id}`));
+  const reporter = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const ok = await board(c.env).report(id, category, note, reporter);
+  return ok ? c.json({ ok: true }, 201) : c.json({ error: "unknown takeover" }, 404);
+});
+
+/** null if the request carries the admin token; otherwise the response to send. */
+function adminDenied(c: { env: Env; req: { header(name: string): string | undefined } }) {
+  const token = c.env.ADMIN_TOKEN;
+  if (!token) return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+  const auth = c.req.header("Authorization") ?? "";
+  if (!sameToken(auth, `Bearer ${token}`)) {
+    return new Response(JSON.stringify({ error: "unauthorized" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  return null;
+}
+
+app.get("/api/admin/reports", async (c) => {
+  const denied = adminDenied(c);
+  if (denied) return denied;
+  return c.json(await board(c.env).reports());
+});
+
+/** Kill switch: remove the current holder now (next buyer, else the previous holder, returns). */
+app.post("/api/admin/kill", async (c) => {
+  const denied = adminDenied(c);
+  if (denied) return denied;
+  const body = (await c.req.json().catch(() => ({}))) as { reason?: unknown };
+  const reason = typeof body.reason === "string" ? body.reason.slice(0, 200) : "removed by admin";
+  return c.json(await board(c.env).kill(reason));
+});
+
+app.post("/api/admin/remove", async (c) => {
+  const denied = adminDenied(c);
+  if (denied) return denied;
+  const body = (await c.req.json().catch(() => ({}))) as { id?: unknown; reason?: unknown };
+  if (typeof body.id !== "string") return c.json({ error: "id required" }, 400);
+  const reason = typeof body.reason === "string" ? body.reason.slice(0, 200) : "removed by admin";
+  const r = await board(c.env).remove(body.id, reason);
+  return c.json(r, r.removed ? 200 : 404);
+});
+
 // Sales log for bookkeeping (ledger import). Hidden unless ADMIN_TOKEN is set.
 app.get("/api/admin/sales.csv", async (c) => {
-  const token = c.env.ADMIN_TOKEN;
-  if (!token) return c.notFound();
-  const auth = c.req.header("Authorization") ?? "";
-  if (!sameToken(auth, `Bearer ${token}`)) return c.json({ error: "unauthorized" }, 401);
+  const denied = adminDenied(c);
+  if (denied) return denied;
   const csv = salesCsv(await board(c.env).sales());
   return c.body(csv, 200, {
     "Content-Type": "text/csv; charset=utf-8",

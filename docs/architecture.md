@@ -38,6 +38,15 @@ If settlement succeeds but queueing fails, the server logs `SETTLED BUT NOT QUEU
 
 Config: `X402_NETWORK` and `FACILITATOR_URL` are vars in `wrangler.jsonc`. `PAY_TO_ADDRESS` is set outside the repo (`.dev.vars` locally, `wrangler secret put PAY_TO_ADDRESS` in production). `GET /api/admin/sales.csv` needs `Authorization: Bearer <ADMIN_TOKEN>` and returns 404 until `ADMIN_TOKEN` is set.
 
+## Reports and admin
+
+- **Report:** `POST /api/report {id, category, note}` (category: scam, nsfw, impersonation, hate, other; note up to 200 characters). There's a "Report this listing" button under the screen and a "report" link on each queued card. Reporters are stored only as SHA-256(IP + takeover id), so one person's repeat reports count once and no raw IPs are kept.
+- **Admin:** `/admin.html` (unlinked, `noindex`). Paste the admin token; it's kept in sessionStorage for that tab only. It shows the current holder, the queue and reports grouped by listing.
+  - `POST /api/admin/kill {reason}` removes the current holder now. The next queued buyer takes over immediately (starting now, not at their earlier payment time). If nobody is queued, the previous holder's card returns as a "restored" reign, which isn't counted in stats.
+  - `POST /api/admin/remove {id, reason}` removes a queued (or the current) listing.
+  - Removed listings are kept, with their reason, for the record, but drop off the recent list, leaderboards and stats.
+- **Auth:** every `/api/admin/*` route needs `Authorization: Bearer <ADMIN_TOKEN>` and returns 404 until the token is set.
+
 ## Link checks
 
 - **Card link** (`worker/links.ts`): blocked if the domain or any parent domain is on MetaMask's open-source phishing list (eth-phishing-detect, about 100k domains) and not whitelisted. It is also blocked if it's a one-edit look-alike of a protected brand from that list's fuzzy list (for example `metamsk.io`), a bare IP address, or a punycode (`xn--`) look-alike.

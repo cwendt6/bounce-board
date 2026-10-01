@@ -27,7 +27,7 @@ export interface View {
     /** Known end in demo mode; unknown in live mode (the holder keeps it until someone buys). */
     endMs: number | null;
   } | null;
-  queue: { card: CardView; startMs: number }[];
+  queue: { id?: string; card: CardView; startMs: number }[];
   recent: { card: CardView; heldMs: number; corners: number }[];
   cornerClub: { label: string; corners: number }[];
   longest: { label: string; ms: number }[];
