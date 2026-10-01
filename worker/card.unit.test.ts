@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateCard } from "./card";
+import { stripControl, validateCard } from "./card";
 
 const base = { name: "Lamp Oil", description: "Warm bulb.", link: "https://example.com/lamp" };
 
@@ -50,5 +50,11 @@ describe("validateCard", () => {
       null,
     ];
     for (const b of bad) expect(validateCard(b).ok).toBe(false);
+  });
+});
+
+describe("stripControl", () => {
+  it("replaces control characters and trims", () => {
+    expect(stripControl("  fake\u0000 air\ndrop\u007f ")).toBe("fake  air drop");
   });
 });

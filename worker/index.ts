@@ -5,7 +5,7 @@ import {
 } from "@x402/core/http";
 import { Hono } from "hono";
 import { Board } from "./board";
-import { type BoardCard, validateCard } from "./card";
+import { type BoardCard, stripControl, validateCard } from "./card";
 import type { Env } from "./env";
 import { checkLink as checkLinkRules, type LinkCheck } from "./links";
 import { parseLogo } from "./logo";
@@ -211,9 +211,7 @@ app.post("/api/report", async (c) => {
   } | null;
   const id = typeof body?.id === "string" ? body.id : "";
   const category = typeof body?.category === "string" ? body.category : "";
-  const note = (typeof body?.note === "string" ? body.note : "")
-    .replace(/[\u0000-\u001f\u007f]/g, " ")
-    .trim();
+  const note = stripControl(typeof body?.note === "string" ? body.note : "");
   if (!/^[0-9a-f-]{36}$/.test(id)) return c.json({ error: "unknown takeover" }, 404);
   if (!(REPORT_CATEGORIES as readonly string[]).includes(category)) {
     return c.json({ error: `category: one of ${REPORT_CATEGORIES.join(", ")}` }, 400);

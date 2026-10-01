@@ -26,6 +26,11 @@ const SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: rejecting control characters is the point
 const CONTROL = /[\u0000-\u001f\u007f]/;
 
+/** Replace control characters with spaces and trim (for free-text fields like report notes). */
+export function stripControl(s: string): string {
+  return s.replace(new RegExp(CONTROL.source, "g"), " ").trim();
+}
+
 type Result = { ok: true; card: BoardCard } | { ok: false; errors: string[] };
 
 function str(v: unknown): string {
