@@ -31,6 +31,13 @@ CREATE TABLE IF NOT EXISTS takeovers (
   card TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS takeovers_status ON takeovers (status, paid_at);
+-- Moderation verdicts by card hash, so the paid retry of a card doesn't re-run the models.
+CREATE TABLE IF NOT EXISTS verdicts (
+  key TEXT PRIMARY KEY,
+  ok INTEGER NOT NULL,
+  reason TEXT,
+  at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS logos (
   takeover_id TEXT PRIMARY KEY,
   mime TEXT NOT NULL CHECK (mime IN ('image/png', 'image/jpeg', 'image/webp')),
@@ -183,6 +190,28 @@ export class Board extends DurableObject<Env> {
       logo.bytes,
     );
     return { ...clean, logo: `/api/logo/${id}` };
+  }
+
+  /** A cached moderation verdict, if it is less than a day old. */
+  verdict(key: string): { ok: boolean; reason: string | null } | null {
+    const row = this.sql
+      .exec<{ ok: number; reason: string | null; at: number }>(
+        "SELECT ok, reason, at FROM verdicts WHERE key = ?",
+        key,
+      )
+      .toArray()[0];
+    if (!row || Date.now() - row.at > 86_400_000) return null;
+    return { ok: row.ok === 1, reason: row.reason };
+  }
+
+  saveVerdict(key: string, ok: boolean, reason: string | null): void {
+    this.sql.exec(
+      "INSERT OR REPLACE INTO verdicts (key, ok, reason, at) VALUES (?, ?, ?, ?)",
+      key,
+      ok ? 1 : 0,
+      reason,
+      Date.now(),
+    );
   }
 
   logo(id: string): { mime: string; data: ArrayBuffer } | null {

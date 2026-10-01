@@ -6,6 +6,8 @@
   "compatibility_flags": ["nodejs_compat"],
   // The built site (npm run build) is served as static assets; /api/* goes to the Worker.
   "assets": { "directory": "./dist", "run_worker_first": ["/api/*"] },
+  // Workers AI for moderation. Free plan: 10,000 neurons/day, errors (no charge) past that.
+  "ai": { "binding": "AI" },
   "durable_objects": { "bindings": [{ "name": "BOARD", "class_name": "Board" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Board"] }],
   "vars": {
@@ -13,6 +15,8 @@
     // Base Sepolia (testnet). Mainnet (eip155:8453) needs Cole's approval and a CDP facilitator.
     "X402_NETWORK": "eip155:84532",
     "FACILITATOR_URL": "https://x402.org/facilitator",
+    // "workers-ai" in every deployed environment. "off" only for tests and offline local dev.
+    "MODERATION": "workers-ai",
     // PAY_TO_ADDRESS is set outside the repo: .dev.vars locally, `wrangler secret put` in prod.
     // Local testing only: lets POST /api/dev/take queue a takeover with no payment.
     // Never true in a deployed environment.

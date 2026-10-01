@@ -13,4 +13,8 @@ export interface Env {
   ADMIN_TOKEN?: string;
   /** "true" only in local dev and tests. Enables POST /api/dev/take without payment. */
   DEV_FAKE_PAY: string;
+  /** Workers AI binding, used for moderation. */
+  AI?: { run(model: string, input: Record<string, unknown>): Promise<unknown> };
+  /** "workers-ai" (default) or "off" (tests and offline dev only). */
+  MODERATION?: string;
 }

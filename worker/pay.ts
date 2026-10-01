@@ -17,6 +17,7 @@ import type {
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { type BoardCard, validateCard } from "./card";
 import { type Logo, parseLogo } from "./logo";
+import type { Verdict } from "./moderation";
 
 export const BASE_MAINNET = "eip155:8453";
 export const BASE_SEPOLIA = "eip155:84532";
@@ -124,6 +125,7 @@ export function facilitatorLabel(url: string): string {
 
 export type TakeResult =
   | { status: 400; body: { errors: string[] } }
+  | { status: 503; body: { error: string } }
   | { status: 402; body: PaymentRequired }
   | { status: 201; card: BoardCard; logo: Logo | null; sale: Sale; settle: SettleResponse };
 
@@ -133,6 +135,8 @@ export interface TakeDeps {
   now: () => number;
   newId: () => string;
   decodePayment: (header: string) => PaymentPayload;
+  /** Moderation for the card and its logo data URL (null if none). */
+  moderate: (card: BoardCard, logoDataUrl: string | null) => Promise<Verdict>;
 }
 
 /**
@@ -149,6 +153,19 @@ export async function processTake(
   const logo = parseLogo((body as { logo?: unknown } | null)?.logo);
   const errors = [...(card.ok ? [] : card.errors), ...(logo.ok ? [] : [logo.error])];
   if (!card.ok || !logo.ok) return { status: 400, body: { errors } };
+
+  // Moderate before quoting a price, so nobody pays for a card we would reject.
+  const rawLogo = logo.logo ? String((body as { logo?: unknown }).logo) : null;
+  const verdict = await deps.moderate(card.card, rawLogo);
+  if (verdict.ok === "unavailable") {
+    return {
+      status: 503,
+      body: {
+        error: "Moderation is unavailable right now. Try again later. You have not been charged.",
+      },
+    };
+  }
+  if (!verdict.ok) return { status: 400, body: { errors: [`rejected: ${verdict.reason}`] } };
 
   const required = await deps.gateway.requirements(resourceUrl);
   if (!paymentHeader) return { status: 402, body: required };
