@@ -17,4 +17,6 @@ export interface Env {
   AI?: { run(model: string, input: Record<string, unknown>): Promise<unknown> };
   /** "workers-ai" (default) or "off" (tests and offline dev only). */
   MODERATION?: string;
+  /** "dexscreener" (default) or "off" (tests and offline dev only). */
+  TOKEN_CHECKS?: string;
 }

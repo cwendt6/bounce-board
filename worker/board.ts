@@ -31,6 +31,12 @@ CREATE TABLE IF NOT EXISTS takeovers (
   card TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS takeovers_status ON takeovers (status, paid_at);
+-- DexScreener token-check results, cached 10 minutes (their API allows 60 req/min).
+CREATE TABLE IF NOT EXISTS token_checks (
+  key TEXT PRIMARY KEY,
+  result TEXT NOT NULL,
+  at INTEGER NOT NULL
+);
 -- Moderation verdicts by card hash, so the paid retry of a card doesn't re-run the models.
 CREATE TABLE IF NOT EXISTS verdicts (
   key TEXT PRIMARY KEY,
@@ -190,6 +196,26 @@ export class Board extends DurableObject<Env> {
       logo.bytes,
     );
     return { ...clean, logo: `/api/logo/${id}` };
+  }
+
+  /** A cached token check, if it is less than 10 minutes old. */
+  tokenCheck(key: string): string | null {
+    const row = this.sql
+      .exec<{ result: string; at: number }>(
+        "SELECT result, at FROM token_checks WHERE key = ?",
+        key,
+      )
+      .toArray()[0];
+    return row && Date.now() - row.at < 600_000 ? row.result : null;
+  }
+
+  saveTokenCheck(key: string, result: string): void {
+    this.sql.exec(
+      "INSERT OR REPLACE INTO token_checks (key, result, at) VALUES (?, ?, ?)",
+      key,
+      result,
+      Date.now(),
+    );
   }
 
   /** A cached moderation verdict, if it is less than a day old. */

@@ -18,6 +18,7 @@ import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { type BoardCard, validateCard } from "./card";
 import { type Logo, parseLogo } from "./logo";
 import type { Verdict } from "./moderation";
+import type { TokenCheck } from "./tokens";
 
 export const BASE_MAINNET = "eip155:8453";
 export const BASE_SEPOLIA = "eip155:84532";
@@ -137,6 +138,8 @@ export interface TakeDeps {
   decodePayment: (header: string) => PaymentPayload;
   /** Moderation for the card and its logo data URL (null if none). */
   moderate: (card: BoardCard, logoDataUrl: string | null) => Promise<Verdict>;
+  /** DexScreener checks for token cards. */
+  checkToken: (card: BoardCard) => Promise<TokenCheck>;
 }
 
 /**
@@ -153,6 +156,10 @@ export async function processTake(
   const logo = parseLogo((body as { logo?: unknown } | null)?.logo);
   const errors = [...(card.ok ? [] : card.errors), ...(logo.ok ? [] : [logo.error])];
   if (!card.ok || !logo.ok) return { status: 400, body: { errors } };
+
+  // Token checks first: they're cheap and catch fake contract addresses.
+  const tok = await deps.checkToken(card.card);
+  if (!tok.ok) return { status: 400, body: { errors: [`token check: ${tok.reason}`] } };
 
   // Moderate before quoting a price, so nobody pays for a card we would reject.
   const rawLogo = logo.logo ? String((body as { logo?: unknown }).logo) : null;
@@ -231,7 +238,8 @@ export async function processTake(
     received_at: deps.now(),
     facilitator: facilitatorLabel(deps.cfg.facilitatorUrl),
   };
-  return { status: 201, card: card.card, logo: logo.logo, sale, settle: s };
+  const shown: BoardCard = card.card.ticker ? { ...card.card, tokenCheck: tok.status } : card.card;
+  return { status: 201, card: shown, logo: logo.logo, sale, settle: s };
 }
 
 export const SALE_COLUMNS: (keyof Sale)[] = [

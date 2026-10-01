@@ -16,6 +16,7 @@ import {
   WorkersAiModerator,
 } from "./moderation";
 import { type Gateway, type PayConfig, processTake, salesCsv, X402Gateway } from "./pay";
+import { checkToken, type TokenCheck } from "./tokens";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -41,12 +42,18 @@ app.post("/api/dev/take", async (c) => {
     const errors = [...(result.ok ? [] : result.errors), ...(logo.ok ? [] : [logo.error])];
     return c.json({ errors }, 400);
   }
+  const tok = await tokenCheck(c.env, result.card);
+  if (!tok.ok) return c.json({ errors: [`token check: ${tok.reason}`] }, 400);
   const verdict = await moderate(c.env, result.card, logo.logo ? String(body.logo) : null);
   if (verdict.ok === "unavailable")
     return c.json({ error: "Moderation is unavailable right now." }, 503);
   if (!verdict.ok) return c.json({ errors: [`rejected: ${verdict.reason}`] }, 400);
   const snapshot = await board(c.env).enqueue(
-    { id: crypto.randomUUID(), paidAtMs: Date.now(), card: result.card },
+    {
+      id: crypto.randomUUID(),
+      paidAtMs: Date.now(),
+      card: result.card.ticker ? { ...result.card, tokenCheck: tok.status } : result.card,
+    },
     logo.logo,
   );
   return c.json(snapshot, 201);
@@ -69,6 +76,21 @@ async function moderate(env: Env, card: BoardCard, logoDataUrl: string | null): 
   if (v.ok === true) await b.saveVerdict(key, true, null);
   else if (v.ok === false) await b.saveVerdict(key, false, v.reason);
   return v;
+}
+
+/** DexScreener token checks with a 10-minute cache in the Durable Object. */
+async function tokenCheck(env: Env, card: BoardCard): Promise<TokenCheck> {
+  if (env.TOKEN_CHECKS === "off" || !card.ticker) return { ok: true, status: "verified" };
+  const key = `${card.chain}:${card.contract}:${card.ticker}`;
+  const b = board(env);
+  const cached = await b.tokenCheck(key);
+  if (cached) return JSON.parse(cached) as TokenCheck;
+  const r = await checkToken(card, (url) =>
+    fetch(url, { headers: { Accept: "application/json", "User-Agent": "bounce-board" } }),
+  );
+  // "unverified" means DexScreener was unreachable: don't cache that, try again next time.
+  if (!(r.ok && r.status === "unverified")) await b.saveTokenCheck(key, JSON.stringify(r));
+  return r;
 }
 
 // One gateway per isolate and config, so the facilitator handshake happens once.
@@ -104,6 +126,7 @@ app.post("/api/take", async (c) => {
         newId: () => crypto.randomUUID(),
         decodePayment: decodePaymentSignatureHeader,
         moderate: (card, logo) => moderate(c.env, card, logo),
+        checkToken: (card) => tokenCheck(c.env, card),
       },
       body,
       c.req.header("PAYMENT-SIGNATURE") ?? c.req.header("X-PAYMENT") ?? null,

@@ -17,6 +17,8 @@
     "FACILITATOR_URL": "https://x402.org/facilitator",
     // "workers-ai" in every deployed environment. "off" only for tests and offline local dev.
     "MODERATION": "workers-ai",
+    // Token checks via DexScreener's public API. "off" only for tests and offline dev.
+    "TOKEN_CHECKS": "dexscreener",
     // PAY_TO_ADDRESS is set outside the repo: .dev.vars locally, `wrangler secret put` in prod.
     // Local testing only: lets POST /api/dev/take queue a takeover with no payment.
     // Never true in a deployed environment.

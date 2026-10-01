@@ -275,6 +275,11 @@ a:hover {
   color: var(--text);
 }
 
+.chain.unverified {
+  border-color: var(--orange);
+  color: var(--orange);
+}
+
 .copy {
   font-family: var(--mono);
   font-size: 12px;

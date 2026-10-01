@@ -1,0 +1,94 @@
+[
+  {
+    "chainId": "base",
+    "dexId": "quickswap",
+    "pairAddress": "0x5D0bC342178C8Fe2c2f9A9fcC9D52555C99936db",
+    "baseToken": {
+      "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "name": "USD Coin",
+      "symbol": "USDC"
+    },
+    "quoteToken": {
+      "address": "0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA",
+      "name": "USD Base Coin",
+      "symbol": "USDbC"
+    },
+    "liquidity": {
+      "usd": 108686.12,
+      "base": 11902,
+      "quote": 96775
+    },
+    "fdv": 3699739341,
+    "marketCap": 60939676334,
+    "pairCreatedAt": 1752584457000
+  },
+  {
+    "chainId": "base",
+    "dexId": "alien-base",
+    "pairAddress": "0x0E635F8EeED4F7279d56692D552F034ECE136019",
+    "baseToken": {
+      "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "name": "USD Coin",
+      "symbol": "USDC"
+    },
+    "quoteToken": {
+      "address": "0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA",
+      "name": "USD Base Coin",
+      "symbol": "USDbC"
+    },
+    "liquidity": {
+      "usd": 127566.24,
+      "base": 19695,
+      "quote": 107857
+    },
+    "fdv": 4321025541,
+    "marketCap": 60943338392,
+    "pairCreatedAt": 1725278699000
+  },
+  {
+    "chainId": "base",
+    "dexId": "uniswap",
+    "pairAddress": "0x867dbb1b6417abcb3696d5a5d9cc38cbf9f0f6d17355515fe1c8303e791832c4",
+    "baseToken": {
+      "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "name": "USD Coin",
+      "symbol": "USDC"
+    },
+    "quoteToken": {
+      "address": "0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA",
+      "name": "USD Base Coin",
+      "symbol": "USDbC"
+    },
+    "liquidity": {
+      "usd": 21385.59,
+      "base": 39.6046,
+      "quote": 21345
+    },
+    "fdv": 4320861161,
+    "marketCap": 60913396305,
+    "pairCreatedAt": 1765668575000
+  },
+  {
+    "chainId": "base",
+    "dexId": "aerodrome",
+    "pairAddress": "0x27a8Afa3Bd49406e48a074350fB7b2020c43B2bD",
+    "baseToken": {
+      "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "name": "USD Coin",
+      "symbol": "USDC"
+    },
+    "quoteToken": {
+      "address": "0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA",
+      "name": "USD Base Coin",
+      "symbol": "USDbC"
+    },
+    "liquidity": {
+      "usd": 33243.84,
+      "base": 15320,
+      "quote": 17915
+    },
+    "fdv": 4320799240,
+    "marketCap": 60929392099,
+    "pairCreatedAt": 1694014525000
+  }
+]
