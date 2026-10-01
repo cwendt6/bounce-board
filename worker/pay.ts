@@ -16,6 +16,7 @@ import type {
 } from "@x402/core/types";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { type BoardCard, validateCard } from "./card";
+import { type Logo, parseLogo } from "./logo";
 
 export const BASE_MAINNET = "eip155:8453";
 export const BASE_SEPOLIA = "eip155:84532";
@@ -124,7 +125,7 @@ export function facilitatorLabel(url: string): string {
 export type TakeResult =
   | { status: 400; body: { errors: string[] } }
   | { status: 402; body: PaymentRequired }
-  | { status: 201; card: BoardCard; sale: Sale; settle: SettleResponse };
+  | { status: 201; card: BoardCard; logo: Logo | null; sale: Sale; settle: SettleResponse };
 
 export interface TakeDeps {
   gateway: Gateway;
@@ -145,7 +146,9 @@ export async function processTake(
   resourceUrl: string,
 ): Promise<TakeResult> {
   const card = validateCard(body);
-  if (!card.ok) return { status: 400, body: { errors: card.errors } };
+  const logo = parseLogo((body as { logo?: unknown } | null)?.logo);
+  const errors = [...(card.ok ? [] : card.errors), ...(logo.ok ? [] : [logo.error])];
+  if (!card.ok || !logo.ok) return { status: 400, body: { errors } };
 
   const required = await deps.gateway.requirements(resourceUrl);
   if (!paymentHeader) return { status: 402, body: required };
@@ -211,7 +214,7 @@ export async function processTake(
     received_at: deps.now(),
     facilitator: facilitatorLabel(deps.cfg.facilitatorUrl),
   };
-  return { status: 201, card: card.card, sale, settle: s };
+  return { status: 201, card: card.card, logo: logo.logo, sale, settle: s };
 }
 
 export const SALE_COLUMNS: (keyof Sale)[] = [

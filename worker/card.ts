@@ -13,6 +13,8 @@ export interface BoardCard extends Card {
   ticker?: string;
   chain?: Chain;
   contract?: string;
+  /** Set by the server only ("/api/logo/<takeover id>"), never taken from buyer input. */
+  logo?: string;
 }
 
 const CHAINS: Chain[] = ["base", "solana", "ethereum"];

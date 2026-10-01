@@ -95,6 +95,47 @@ describe("board API", () => {
     expect(env.DEV_FAKE_PAY).toBe("true");
   });
 
+  it("stores an uploaded logo and serves it as an image only", async () => {
+    // Smallest valid-looking WebP header; the server checks magic bytes, not decodability.
+    const webp = Uint8Array.from([
+      0x52, 0x49, 0x46, 0x46, 4, 0, 0, 0, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50,
+    ]);
+    const logo = `data:image/webp;base64,${btoa(String.fromCharCode(...webp))}`;
+    const res = await SELF.fetch("https://board.test/api/dev/take", {
+      method: "POST",
+      body: JSON.stringify({ name: "Logo Co", link: "https://example.com", logo }),
+    });
+    expect(res.status).toBe(201);
+    const s = (await res.json()) as Snapshot;
+    const holder = [s.current, ...s.queue].find((h) => h?.card.name === "Logo Co");
+    expect(holder?.card.logo).toMatch(/^\/api\/logo\/[0-9a-f-]{36}$/);
+    const img = await SELF.fetch(`https://board.test${holder?.card.logo}`);
+    expect(img.status).toBe(200);
+    expect(img.headers.get("Content-Type")).toBe("image/webp");
+    expect(img.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(img.headers.get("Content-Security-Policy")).toContain("default-src 'none'");
+    expect(new Uint8Array(await img.arrayBuffer())).toEqual(webp);
+  });
+
+  it("rejects SVG logos and never takes a logo URL from the buyer", async () => {
+    const svg = `data:image/svg+xml;base64,${btoa("<svg onload='alert(1)'/>")}`;
+    const bad = await SELF.fetch("https://board.test/api/dev/take", {
+      method: "POST",
+      body: JSON.stringify({ name: "Svg Co", link: "https://example.com", logo: svg }),
+    });
+    expect(bad.status).toBe(400);
+    const sneaky = await SELF.fetch("https://board.test/api/dev/take", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Url Co",
+        link: "https://example.com",
+        logo: "https://evil.example/x.png",
+      }),
+    });
+    expect(sneaky.status).toBe(400);
+    expect((await SELF.fetch("https://board.test/api/logo/not-an-id")).status).toBe(404);
+  });
+
   it("refuses /api/take when no receiving address is configured", async () => {
     const res = await SELF.fetch("https://board.test/api/take", {
       method: "POST",
