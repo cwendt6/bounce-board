@@ -29,6 +29,7 @@ export default defineConfig({
                 PAY_TO_ADDRESS: "",
                 MODERATION: "off",
                 TOKEN_CHECKS: "off",
+                LINK_CHECKS: "off",
               },
             },
           }),

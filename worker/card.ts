@@ -3,6 +3,7 @@
  * token/link reputation checks arrive in milestone 3.
  */
 import type { Card } from "../src/core/queue";
+import { checkDescription } from "./links";
 
 export type Chain = "base" | "solana" | "ethereum";
 
@@ -44,6 +45,8 @@ export function validateCard(input: unknown): Result {
 
   if (!name || name.length > 32) errors.push("name: 1 to 32 characters");
   if (description.length > 120) errors.push("description: at most 120 characters");
+  const desc = checkDescription(description);
+  if (!desc.ok) errors.push(desc.reason);
   for (const [k, v] of Object.entries({ name, description, x, ticker, contract })) {
     if (CONTROL.test(v)) errors.push(`${k}: control characters are not allowed`);
   }
