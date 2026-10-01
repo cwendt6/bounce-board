@@ -9,7 +9,14 @@ import {
   positionAt,
   SCREEN_W,
 } from "./core/motion";
-import { boxLabel, dexscreenerUrl, formatDuration, initials, shortAddress } from "./format";
+import {
+  boxLabel,
+  dexscreenerUrl,
+  formatDuration,
+  initials,
+  shortAddress,
+  splitLabel,
+} from "./format";
 import { pickSource, type Source } from "./sources";
 import type { CardView, View } from "./view";
 
@@ -86,27 +93,14 @@ function fitText(text: string, start: number, maxW: number): number {
 }
 
 /**
- * Lay out a label in at most two lines: one line if it fits at a readable size,
- * otherwise split at the most balanced space, shrinking down to `min`, then ellipsize.
+ * Lay out a label in at most two lines: one line if it fits at a readable size, otherwise two
+ * balanced lines (see splitLabel), shrinking down to `min`, then ellipsize as a last resort.
  */
 function layoutLabel(text: string, start: number, min: number, maxW: number) {
   const one = fitText(text, start, maxW);
-  if (one >= start * 0.75 || !text.includes(" ")) {
-    if (one >= min) return { size: one, lines: [text] };
-  }
-  const words = text.split(" ");
-  let best = [text, ""];
-  let bestDiff = Number.POSITIVE_INFINITY;
-  for (let i = 1; i < words.length; i++) {
-    const a = words.slice(0, i).join(" ");
-    const b = words.slice(i).join(" ");
-    const diff = Math.abs(a.length - b.length);
-    if (diff < bestDiff) {
-      bestDiff = diff;
-      best = [a, b];
-    }
-  }
-  const lines = best.filter(Boolean);
+  const parts = splitLabel(text);
+  if (one >= start * 0.75 || !parts) return { size: Math.max(one, 8), lines: [text] };
+  const lines = [...parts];
   let size = start * 0.8;
   setFont(size);
   const widest = () => Math.max(...lines.map((l) => ctx.measureText(l).width));

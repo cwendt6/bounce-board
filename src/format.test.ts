@@ -28,3 +28,23 @@ describe("format", () => {
     expect(formatDuration(1834)).toBe("30m 34s");
   });
 });
+
+import { splitLabel } from "./format";
+
+describe("splitLabel", () => {
+  it("splits on the most balanced space", () => {
+    expect(splitLabel("Chalk Dust Studio")).toEqual(["Chalk Dust", "Studio"]);
+  });
+
+  it("splits camelCase handles at a word boundary", () => {
+    expect(splitLabel("DegenCapitalVC")).toEqual(["Degen", "CapitalVC"]);
+  });
+
+  it("breaks a long plain word in the middle", () => {
+    expect(splitLabel("supercalifragilistic")).toEqual(["supercalif", "ragilistic"]);
+  });
+
+  it("leaves short labels alone", () => {
+    expect(splitLabel("$GO")).toBeNull();
+  });
+});

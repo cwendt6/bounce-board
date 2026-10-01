@@ -110,7 +110,10 @@ export async function takeTheBox(
   });
   const payer = new x402HTTPClient(client);
 
-  status("Approve the $1 USDC payment in your wallet…");
+  const terms = required.accepts[0];
+  const amount = (Number(terms.amount) / 1e6).toFixed(2);
+  const to = `${terms.payTo.slice(0, 6)}…${terms.payTo.slice(-4)}`;
+  status(`Sign one $${amount} USDC transfer to ${to} in your wallet…`);
   const slow = window.setTimeout(
     () =>
       status(
