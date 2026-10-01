@@ -64,6 +64,7 @@ function deps(gateway: Gateway, payload: Partial<PaymentPayload> = {}): TakeDeps
     decodePayment: () => ({ x402Version: 2, accepted: req, payload: {}, ...payload }),
     moderate: async () => ({ ok: true }),
     checkToken: async () => ({ ok: true, status: "verified" }),
+    checkLink: async () => ({ ok: true }),
   };
 }
 
@@ -72,6 +73,27 @@ describe("processTake", () => {
     const g = fake();
     const r = await processTake(deps(g), { name: "" }, null, "u");
     expect(r.status).toBe(400);
+    expect(g.calls).toEqual([]);
+  });
+
+  it("rejects a phishing link before any other check", async () => {
+    const g = fake();
+    let tokenChecked = false;
+    const d = {
+      ...deps(g),
+      checkLink: async () => ({
+        ok: false as const,
+        reason: "link: this domain is on a phishing blocklist",
+      }),
+      checkToken: async () => {
+        tokenChecked = true;
+        return { ok: true as const, status: "verified" as const };
+      },
+    };
+    const r = await processTake(d, card, null, "u");
+    expect(r.status).toBe(400);
+    expect(r.status === 400 && r.body.errors[0]).toMatch(/phishing blocklist/);
+    expect(tokenChecked).toBe(false);
     expect(g.calls).toEqual([]);
   });
 

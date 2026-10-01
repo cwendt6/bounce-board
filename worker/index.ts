@@ -7,6 +7,7 @@ import { Hono } from "hono";
 import { Board } from "./board";
 import { type BoardCard, validateCard } from "./card";
 import type { Env } from "./env";
+import { checkLink as checkLinkRules, type LinkCheck } from "./links";
 import { parseLogo } from "./logo";
 import {
   allowAll,
@@ -16,6 +17,7 @@ import {
   WorkersAiModerator,
 } from "./moderation";
 import { type Gateway, type PayConfig, processTake, salesCsv, X402Gateway } from "./pay";
+import { PhishingListStore } from "./phishing";
 import { checkToken, type TokenCheck } from "./tokens";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -42,6 +44,8 @@ app.post("/api/dev/take", async (c) => {
     const errors = [...(result.ok ? [] : result.errors), ...(logo.ok ? [] : [logo.error])];
     return c.json({ errors }, 400);
   }
+  const link = await linkCheck(c.env, result.card.link);
+  if (!link.ok) return c.json({ errors: [link.reason] }, 400);
   const tok = await tokenCheck(c.env, result.card);
   if (!tok.ok) return c.json({ errors: [`token check: ${tok.reason}`] }, 400);
   const verdict = await moderate(c.env, result.card, logo.logo ? String(body.logo) : null);
@@ -76,6 +80,18 @@ async function moderate(env: Env, card: BoardCard, logoDataUrl: string | null): 
   if (v.ok === true) await b.saveVerdict(key, true, null);
   else if (v.ok === false) await b.saveVerdict(key, false, v.reason);
   return v;
+}
+
+const phishing = (env: Env) => env.PHISHING.get(env.PHISHING.idFromName("metamask"));
+
+async function linkCheck(env: Env, link: string): Promise<LinkCheck> {
+  if (env.LINK_CHECKS === "off") return checkLinkRules(link, null);
+  try {
+    return await phishing(env).check(link);
+  } catch (e) {
+    console.error("link check unavailable", e);
+    return checkLinkRules(link, null);
+  }
 }
 
 /** DexScreener token checks with a 10-minute cache in the Durable Object. */
@@ -127,6 +143,7 @@ app.post("/api/take", async (c) => {
         decodePayment: decodePaymentSignatureHeader,
         moderate: (card, logo) => moderate(c.env, card, logo),
         checkToken: (card) => tokenCheck(c.env, card),
+        checkLink: (link) => linkCheck(c.env, link),
       },
       body,
       c.req.header("PAYMENT-SIGNATURE") ?? c.req.header("X-PAYMENT") ?? null,
@@ -199,5 +216,16 @@ app.get("/api/admin/sales.csv", async (c) => {
 
 app.all("/api/*", (c) => c.json({ error: "not found" }, 404));
 
-export default app;
-export { Board };
+export default {
+  fetch: app.fetch,
+  /** Daily cron: refresh the phishing list. */
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(
+      phishing(env)
+        .refresh()
+        .then((n) => console.log(`phishing list refreshed: ${n} domains`))
+        .catch((e) => console.error("phishing list refresh failed", e)),
+    );
+  },
+};
+export { Board, PhishingListStore };

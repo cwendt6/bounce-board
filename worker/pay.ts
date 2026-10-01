@@ -16,6 +16,7 @@ import type {
 } from "@x402/core/types";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { type BoardCard, validateCard } from "./card";
+import type { LinkCheck } from "./links";
 import { type Logo, parseLogo } from "./logo";
 import type { Verdict } from "./moderation";
 import type { TokenCheck } from "./tokens";
@@ -140,6 +141,8 @@ export interface TakeDeps {
   moderate: (card: BoardCard, logoDataUrl: string | null) => Promise<Verdict>;
   /** DexScreener checks for token cards. */
   checkToken: (card: BoardCard) => Promise<TokenCheck>;
+  /** Phishing and look-alike checks on the card's link. */
+  checkLink: (link: string) => Promise<LinkCheck>;
 }
 
 /**
@@ -157,7 +160,10 @@ export async function processTake(
   const errors = [...(card.ok ? [] : card.errors), ...(logo.ok ? [] : [logo.error])];
   if (!card.ok || !logo.ok) return { status: 400, body: { errors } };
 
-  // Token checks first: they're cheap and catch fake contract addresses.
+  const link = await deps.checkLink(card.card.link);
+  if (!link.ok) return { status: 400, body: { errors: [link.reason] } };
+
+  // Token checks next: they're cheap and catch fake contract addresses.
   const tok = await deps.checkToken(card.card);
   if (!tok.ok) return { status: 400, body: { errors: [`token check: ${tok.reason}`] } };
 

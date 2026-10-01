@@ -38,6 +38,13 @@ If settlement succeeds but queueing fails, the server logs `SETTLED BUT NOT QUEU
 
 Config: `X402_NETWORK` and `FACILITATOR_URL` are vars in `wrangler.jsonc`. `PAY_TO_ADDRESS` is set outside the repo (`.dev.vars` locally, `wrangler secret put PAY_TO_ADDRESS` in production). `GET /api/admin/sales.csv` needs `Authorization: Bearer <ADMIN_TOKEN>` and returns 404 until `ADMIN_TOKEN` is set.
 
+## Link checks
+
+- **Card link** (`worker/links.ts`): blocked if the domain or any parent domain is on MetaMask's open-source phishing list (eth-phishing-detect, about 100k domains) and not whitelisted. It is also blocked if it's a one-edit look-alike of a protected brand from that list's fuzzy list (for example `metamsk.io`), a bare IP address, or a punycode (`xn--`) look-alike.
+- **Descriptions:** may not contain links or domains at all, so no wallet-connect links. The link field is the only place for a URL.
+- **Storage:** the list lives in its own Durable Object (`PhishingListStore`, SQLite) so a refresh (about 2 s) never stalls the board. A daily cron refreshes it, and it loads on first use. A refresh that looks wrong (fewer than 1,000 domains) keeps the old copy. If the list can't load, only the cheap rules apply.
+- **Plan check:** probed on Cole's account on 2026-10-01. Durable Object alarms fire on the current plan (3,001 ms for a 3 s alarm), and a Durable Object loaded the full list in one request.
+
 ## Token checks
 
 Cards that list a token (ticker, chain, contract) are checked against DexScreener's public API before moderation and before the price quote (`worker/tokens.ts`):

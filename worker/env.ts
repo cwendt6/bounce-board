@@ -1,7 +1,9 @@
 import type { Board } from "./board";
+import type { PhishingListStore } from "./phishing";
 
 export interface Env {
   BOARD: DurableObjectNamespace<Board>;
+  PHISHING: DurableObjectNamespace<PhishingListStore>;
   ASSETS: Fetcher;
   PRICE_USD: string;
   /** CAIP-2 network for payments: eip155:84532 (Base Sepolia) or eip155:8453 (Base). */
@@ -19,4 +21,8 @@ export interface Env {
   MODERATION?: string;
   /** "dexscreener" (default) or "off" (tests and offline dev only). */
   TOKEN_CHECKS?: string;
+  /** "metamask" (default) or "off" (tests and offline dev only). */
+  LINK_CHECKS?: string;
+  /** Override for the phishing list source (tests). */
+  PHISHING_LIST_URL?: string;
 }
