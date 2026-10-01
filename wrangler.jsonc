@@ -11,12 +11,14 @@
   "durable_objects": {
     "bindings": [
       { "name": "BOARD", "class_name": "Board" },
-      { "name": "PHISHING", "class_name": "PhishingListStore" }
+      { "name": "PHISHING", "class_name": "PhishingListStore" },
+      { "name": "LIMITER", "class_name": "RateLimiter" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["Board"] },
-    { "tag": "v2", "new_sqlite_classes": ["PhishingListStore"] }
+    { "tag": "v2", "new_sqlite_classes": ["PhishingListStore"] },
+    { "tag": "v3", "new_sqlite_classes": ["RateLimiter"] }
   ],
   // Daily refresh of the phishing list (MetaMask eth-phishing-detect).
   "triggers": { "crons": ["17 7 * * *"] },

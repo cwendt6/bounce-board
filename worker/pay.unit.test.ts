@@ -65,6 +65,7 @@ function deps(gateway: Gateway, payload: Partial<PaymentPayload> = {}): TakeDeps
     moderate: async () => ({ ok: true }),
     checkToken: async () => ({ ok: true, status: "verified" }),
     checkLink: async () => ({ ok: true }),
+    limitPaid: async () => ({ ok: true, retryAfter: 0 }),
   };
 }
 
@@ -166,6 +167,18 @@ describe("processTake", () => {
     );
     expect(r.status).toBe(402);
     expect(r.status === 402 && r.body.error).toMatch(/receiving wallet/);
+    expect(g.calls).not.toContain("verify");
+  });
+
+  it("refuses a wallet over its limit before verifying the payment", async () => {
+    const g = fake();
+    const d = {
+      ...deps(g, { payload: { authorization: { from: "0xbuyer" } } }),
+      limitPaid: async () => ({ ok: false, retryAfter: 120 }),
+    };
+    const r = await processTake(d, card, "x", "u");
+    expect(r.status).toBe(429);
+    expect(r.status === 429 && r.retryAfter).toBe(120);
     expect(g.calls).not.toContain("verify");
   });
 

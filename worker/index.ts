@@ -4,9 +4,11 @@ import {
   encodePaymentResponseHeader,
 } from "@x402/core/http";
 import { Hono } from "hono";
+import { holderKey } from "../src/core/leaderboard";
 import { Board } from "./board";
 import { type BoardCard, stripControl, validateCard } from "./card";
 import type { Env } from "./env";
+import { RateLimiter, RULES, type Rule } from "./limiter";
 import { checkLink as checkLinkRules, type LinkCheck } from "./links";
 import { parseLogo } from "./logo";
 import {
@@ -21,6 +23,28 @@ import { PhishingListStore } from "./phishing";
 import { checkToken, type TokenCheck } from "./tokens";
 
 const app = new Hono<{ Bindings: Env }>();
+
+const limiter = (env: Env) => env.LIMITER.get(env.LIMITER.idFromName("limits"));
+
+async function sha256(text: string): Promise<string> {
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Hashed client IP, so rate-limit keys never hold raw IPs. */
+async function ipKey(req: { header(name: string): string | undefined }): Promise<string> {
+  return `ip:${(await sha256(req.header("CF-Connecting-IP") ?? "unknown")).slice(0, 32)}`;
+}
+
+/** null if allowed; otherwise a 429 response with Retry-After. */
+async function limited(env: Env, key: string, rule: Rule): Promise<Response | null> {
+  const r = await limiter(env).hit(key, rule);
+  if (r.ok) return null;
+  return new Response(JSON.stringify({ error: "Too many requests. Try again later." }), {
+    status: 429,
+    headers: { "Content-Type": "application/json", "Retry-After": String(r.retryAfter) },
+  });
+}
 
 /** There is one board, so one Durable Object instance. */
 const board = (env: Env) => env.BOARD.get(env.BOARD.idFromName("main"));
@@ -37,6 +61,8 @@ app.get("/api/live", async (c) => {
 // Local dev and tests only: queue a takeover with no payment.
 app.post("/api/dev/take", async (c) => {
   if (c.env.DEV_FAKE_PAY !== "true") return c.notFound();
+  const tooMany = await limited(c.env, `take:${await ipKey(c.req)}`, RULES.takePerIp);
+  if (tooMany) return tooMany;
   const body = await c.req.json().catch(() => null);
   const result = validateCard(body);
   const logo = parseLogo((body as { logo?: unknown } | null)?.logo);
@@ -125,6 +151,8 @@ function gatewayFor(cfg: PayConfig): Gateway {
 app.post("/api/take", async (c) => {
   const payTo = c.env.PAY_TO_ADDRESS;
   if (!payTo) return c.json({ error: "payments are not configured" }, 503);
+  const tooMany = await limited(c.env, `take:${await ipKey(c.req)}`, RULES.takePerIp);
+  if (tooMany) return tooMany;
   const cfg: PayConfig = {
     network: c.env.X402_NETWORK,
     payTo,
@@ -144,6 +172,12 @@ app.post("/api/take", async (c) => {
         moderate: (card, logo) => moderate(c.env, card, logo),
         checkToken: (card) => tokenCheck(c.env, card),
         checkLink: (link) => linkCheck(c.env, link),
+        limitPaid: async (payer, card) => {
+          const l = limiter(c.env);
+          const w = await l.hit(`wallet:${payer}`, RULES.paidPerWallet);
+          if (!w.ok) return w;
+          return l.hit(`card:${holderKey(card)}`, RULES.paidPerCard);
+        },
       },
       body,
       c.req.header("PAYMENT-SIGNATURE") ?? c.req.header("X-PAYMENT") ?? null,
@@ -156,6 +190,10 @@ app.post("/api/take", async (c) => {
 
   if (result.status === 400) return c.json(result.body, 400);
   if (result.status === 503) return c.json(result.body, 503);
+  if (result.status === 429) {
+    c.header("Retry-After", String(result.retryAfter));
+    return c.json(result.body, 429);
+  }
   if (result.status === 402) {
     c.header("PAYMENT-REQUIRED", encodePaymentRequiredHeader(result.body));
     c.header("Cache-Control", "no-store");
@@ -217,6 +255,8 @@ app.post("/api/report", async (c) => {
     return c.json({ error: `category: one of ${REPORT_CATEGORIES.join(", ")}` }, 400);
   }
   if (note.length > 200) return c.json({ error: "note: at most 200 characters" }, 400);
+  const tooMany = await limited(c.env, `report:${await ipKey(c.req)}`, RULES.reportPerIp);
+  if (tooMany) return tooMany;
   const ip = c.req.header("CF-Connecting-IP") ?? "unknown";
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${ip}:${id}`));
   const reporter = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -289,4 +329,4 @@ export default {
     );
   },
 };
-export { Board, PhishingListStore };
+export { Board, PhishingListStore, RateLimiter };
