@@ -38,6 +38,14 @@ If settlement succeeds but queueing fails, the server logs `SETTLED BUT NOT QUEU
 
 Config: `X402_NETWORK` and `FACILITATOR_URL` are vars in `wrangler.jsonc`. `PAY_TO_ADDRESS` is set outside the repo (`.dev.vars` locally, `wrangler secret put PAY_TO_ADDRESS` in production). `GET /api/admin/sales.csv` needs `Authorization: Bearer <ADMIN_TOKEN>` and returns 404 until `ADMIN_TOKEN` is set.
 
+## Logos
+
+- **In the browser** (`src/logo-input.ts`): the buyer picks a PNG, JPG or WebP up to 500 KB. The page center-crops it to a square and re-encodes it to a 256x256 WebP on a canvas, which drops metadata and anything riding along in the file.
+- **On the server** (`worker/logo.ts`): it trusts nothing from the page. It checks the declared type against the magic bytes and enforces the 500 KB cap. SVG is never accepted, because SVGs can carry scripts.
+- **Storage:** the logo is stored in the Durable Object's SQLite in the same transaction as the takeover (and the sale). The card's `logo` field is always set by the server (`/api/logo/<takeover id>`), never taken from buyer input.
+- **Serving:** `GET /api/logo/:id` returns the exact content type, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; sandbox`, and an immutable cache header.
+- Image moderation comes in M3.
+
 ## Sales log (bookkeeping)
 
 Every settled payment is one row, written in the same transaction that queues the takeover. The table and its CSV export use the same columns, so btc-mining-ledger can import it as business income for CT Wendt Holdings LLC.

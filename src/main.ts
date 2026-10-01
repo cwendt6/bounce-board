@@ -17,6 +17,7 @@ import {
   shortAddress,
   splitLabel,
 } from "./format";
+import { LogoError, prepareLogo } from "./logo-input";
 import { pickSource, type Source } from "./sources";
 import type { CardView, View } from "./view";
 
@@ -66,6 +67,25 @@ function roundRect(x: number, y: number, w: number, h: number, r: number) {
   ctx.arcTo(x, y + h, x, y, r);
   ctx.arcTo(x, y, x + w, y, r);
   ctx.closePath();
+}
+
+/** Logo URLs from the server are root-relative ("/api/logo/<id>"); resolve against the base. */
+function logoSrc(path: string): string {
+  return `${import.meta.env.BASE_URL}${path.replace(/^\//, "")}`;
+}
+
+const logoCache = new Map<string, HTMLImageElement>();
+
+/** The loaded logo image, or null while it loads (the next frame picks it up). */
+function logoImage(path: string): HTMLImageElement | null {
+  let img = logoCache.get(path);
+  if (!img) {
+    img = new Image();
+    img.decoding = "async";
+    img.src = logoSrc(path);
+    logoCache.set(path, img);
+  }
+  return img.complete && img.naturalWidth > 0 ? img : null;
 }
 
 const css = getComputedStyle(document.documentElement);
@@ -162,18 +182,28 @@ function drawBox(card: CardView, phase: Phase, t: number, empty: boolean, flashi
   ctx.strokeStyle = flashing ? COLOR.orange : COLOR.blue;
   ctx.stroke();
 
-  // Logo placeholder until uploads land: initials on a blue circle.
+  // The holder's logo in a circle; initials on blue until it loads (or if there is none).
   const r = hgt * 0.26;
   const cx = x + hgt * 0.42;
   const cy = y + hgt / 2;
-  ctx.fillStyle = COLOR.blue;
-  ctx.beginPath();
-  ctx.arc(cx, cy, r, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = COLOR.white;
-  ctx.textAlign = "center";
-  const isize = fitText(initials(card.name), r * 0.9, r * 1.5);
-  ctx.fillText(initials(card.name), cx, cy + isize * 0.04);
+  const img = card.logo ? logoImage(card.logo) : null;
+  if (img) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.drawImage(img, cx - r, cy - r, r * 2, r * 2);
+    ctx.restore();
+  } else {
+    ctx.fillStyle = COLOR.blue;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = COLOR.white;
+    ctx.textAlign = "center";
+    const isize = fitText(initials(card.name), r * 0.9, r * 1.5);
+    ctx.fillText(initials(card.name), cx, cy + isize * 0.04);
+  }
 
   const textX = x + hgt * 0.8;
   const { size, lines } = layoutLabel(label, hgt * 0.3, hgt * 0.15, x + w - hgt * 0.12 - textX);
@@ -200,7 +230,9 @@ function showCorner(hit: CornerHit) {
 // ---------- sidebars ----------
 
 function holderRow(holder: CardView, extra: Child[] = []): HTMLLIElement {
-  const logo = h("span", { class: "logo", "aria-hidden": "true" }, initials(holder.name));
+  const logo = holder.logo
+    ? h("img", { class: "logo", src: logoSrc(holder.logo), alt: "", loading: "lazy" })
+    : h("span", { class: "logo", "aria-hidden": "true" }, initials(holder.name));
   const meta: Child[] = [];
   if (holder.chain) meta.push(h("span", { class: `chain ${holder.chain}` }, holder.chain));
   if (holder.chain && holder.contract) {
@@ -432,6 +464,26 @@ function setupTakeDialog() {
     status.classList.toggle("error", error);
   };
 
+  // Logo: prepared (cropped and re-encoded) as soon as it's picked, so errors show early.
+  let logoData: string | null = null;
+  const preview = $("logo-preview") as HTMLImageElement;
+  const fileInput = form.elements.namedItem("logo") as HTMLInputElement;
+  fileInput.addEventListener("change", async () => {
+    logoData = null;
+    preview.hidden = true;
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    try {
+      logoData = await prepareLogo(file);
+      preview.src = logoData;
+      preview.hidden = false;
+      say("");
+    } catch (err) {
+      fileInput.value = "";
+      say(err instanceof LogoError ? err.message : "Couldn't use that image.", true);
+    }
+  });
+
   open.addEventListener("click", () => {
     say("");
     dialog.showModal();
@@ -450,6 +502,7 @@ function setupTakeDialog() {
       description: get("description"),
       x: get("x") || undefined,
       ...(isToken ? { ticker: get("ticker"), chain: get("chain"), contract: get("contract") } : {}),
+      ...(logoData ? { logo: logoData } : {}),
     };
     if (!card.name || !card.link) {
       say("Name and link are required.", true);
@@ -469,6 +522,8 @@ function setupTakeDialog() {
       );
       status.classList.remove("error");
       form.reset();
+      logoData = null;
+      preview.hidden = true;
     } catch (err) {
       const code = (err as { code?: number }).code;
       say(

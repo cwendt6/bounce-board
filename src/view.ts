@@ -9,6 +9,8 @@ export interface CardView {
   ticker?: string;
   chain?: Chain;
   contract?: string;
+  /** Server-relative logo URL ("/api/logo/<id>"), set by the server only. */
+  logo?: string;
 }
 
 export interface View {

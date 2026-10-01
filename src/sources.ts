@@ -144,7 +144,11 @@ export class LiveSource implements Source {
     let pinger = 0;
     ws.addEventListener("open", () => {
       this.retry = 1000;
-      const ping = () => ws.send(JSON.stringify({ type: "ping", t0: Date.now() }));
+      const ping = () => {
+        // Pings are scheduled ahead; skip them if the socket closed in the meantime.
+        if (ws.readyState === WebSocket.OPEN)
+          ws.send(JSON.stringify({ type: "ping", t0: Date.now() }));
+      };
       for (let i = 0; i < 5; i++) window.setTimeout(ping, i * 300);
       pinger = window.setInterval(ping, 30_000);
     });

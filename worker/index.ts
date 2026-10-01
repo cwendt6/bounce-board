@@ -7,6 +7,7 @@ import { Hono } from "hono";
 import { Board } from "./board";
 import { validateCard } from "./card";
 import type { Env } from "./env";
+import { parseLogo } from "./logo";
 import { type Gateway, type PayConfig, processTake, salesCsv, X402Gateway } from "./pay";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -28,12 +29,15 @@ app.post("/api/dev/take", async (c) => {
   if (c.env.DEV_FAKE_PAY !== "true") return c.notFound();
   const body = await c.req.json().catch(() => null);
   const result = validateCard(body);
-  if (!result.ok) return c.json({ errors: result.errors }, 400);
-  const snapshot = await board(c.env).enqueue({
-    id: crypto.randomUUID(),
-    paidAtMs: Date.now(),
-    card: result.card,
-  });
+  const logo = parseLogo((body as { logo?: unknown } | null)?.logo);
+  if (!result.ok || !logo.ok) {
+    const errors = [...(result.ok ? [] : result.errors), ...(logo.ok ? [] : [logo.error])];
+    return c.json({ errors }, 400);
+  }
+  const snapshot = await board(c.env).enqueue(
+    { id: crypto.randomUUID(), paidAtMs: Date.now(), card: result.card },
+    logo.logo,
+  );
   return c.json(snapshot, 201);
 });
 
@@ -88,7 +92,7 @@ app.post("/api/take", async (c) => {
 
   // Settled. From here a failure means we have the money and no takeover: log it loudly.
   try {
-    const r = await board(c.env).enqueuePaid(result.sale, result.card);
+    const r = await board(c.env).enqueuePaid(result.sale, result.card, result.logo);
     c.header("PAYMENT-RESPONSE", encodePaymentResponseHeader(result.settle));
     return c.json({ duplicate: r.duplicate, tx: result.sale.tx_hash, snapshot: r.snapshot }, 201);
   } catch (e) {
@@ -98,6 +102,21 @@ app.post("/api/take", async (c) => {
       500,
     );
   }
+});
+
+// Logos are served as images only: exact type, no sniffing, no scripts, cached forever
+// (a logo never changes for a given takeover id).
+app.get("/api/logo/:id", async (c) => {
+  const id = c.req.param("id");
+  if (!/^[0-9a-f-]{36}$/.test(id)) return c.notFound();
+  const logo = await board(c.env).logo(id);
+  if (!logo) return c.notFound();
+  return c.body(logo.data, 200, {
+    "Content-Type": logo.mime,
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "default-src 'none'; sandbox",
+    "Cache-Control": "public, max-age=31536000, immutable",
+  });
 });
 
 function sameToken(a: string, b: string): boolean {

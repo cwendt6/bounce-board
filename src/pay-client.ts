@@ -22,6 +22,8 @@ export interface TakeCardInput {
   ticker?: string;
   chain?: string;
   contract?: string;
+  /** Data URL from prepareLogo(). */
+  logo?: string;
 }
 
 export class TakeError extends Error {}

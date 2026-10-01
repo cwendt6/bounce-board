@@ -16,6 +16,7 @@ import {
 } from "../src/core/queue";
 import type { BoardCard } from "./card";
 import type { Env } from "./env";
+import type { Logo } from "./logo";
 import type { Sale } from "./pay";
 
 const SCHEMA = `
@@ -30,6 +31,11 @@ CREATE TABLE IF NOT EXISTS takeovers (
   card TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS takeovers_status ON takeovers (status, paid_at);
+CREATE TABLE IF NOT EXISTS logos (
+  takeover_id TEXT PRIMARY KEY,
+  mime TEXT NOT NULL CHECK (mime IN ('image/png', 'image/jpeg', 'image/webp')),
+  data BLOB NOT NULL
+);
 -- One row per settled payment. Same columns as the CSV export for the ledger.
 CREATE TABLE IF NOT EXISTS sales (
   id TEXT PRIMARY KEY,
@@ -149,13 +155,15 @@ export class Board extends DurableObject<Env> {
   // ---------- RPC ----------
 
   /** Queue a paid takeover. Called only after payment has settled (or in local dev mode). */
-  async enqueue(p: Pending<BoardCard>): Promise<Snapshot> {
-    this.sql.exec(
-      "INSERT INTO takeovers (id, status, paid_at, card) VALUES (?, 'queued', ?, ?)",
-      p.id,
-      p.paidAtMs,
-      JSON.stringify(p.card),
-    );
+  async enqueue(p: Pending<BoardCard>, logo: Logo | null = null): Promise<Snapshot> {
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec(
+        "INSERT INTO takeovers (id, status, paid_at, card) VALUES (?, 'queued', ?, ?)",
+        p.id,
+        p.paidAtMs,
+        JSON.stringify(this.withLogo(p.id, p.card, logo)),
+      );
+    });
     await this.step();
     return this.snapshot();
   }
@@ -164,9 +172,33 @@ export class Board extends DurableObject<Env> {
    * Record a settled sale and queue its takeover in one transaction, so a sale never exists
    * without its takeover. A repeated tx hash is a no-op and returns duplicate: true.
    */
+  /** Store the logo (if any) and point the card at it. Call inside a transaction. */
+  private withLogo(id: string, card: BoardCard, logo: Logo | null): BoardCard {
+    const { logo: _ignored, ...clean } = card;
+    if (!logo) return clean;
+    this.sql.exec(
+      "INSERT INTO logos (takeover_id, mime, data) VALUES (?, ?, ?)",
+      id,
+      logo.mime,
+      logo.bytes,
+    );
+    return { ...clean, logo: `/api/logo/${id}` };
+  }
+
+  logo(id: string): { mime: string; data: ArrayBuffer } | null {
+    const row = this.sql
+      .exec<{ mime: string; data: ArrayBuffer }>(
+        "SELECT mime, data FROM logos WHERE takeover_id = ?",
+        id,
+      )
+      .toArray()[0];
+    return row ? { mime: row.mime, data: row.data } : null;
+  }
+
   async enqueuePaid(
     sale: Sale,
     card: BoardCard,
+    logo: Logo | null = null,
   ): Promise<{ duplicate: boolean; snapshot: Snapshot }> {
     const seen = this.sql.exec("SELECT 1 FROM sales WHERE tx_hash = ?", sale.tx_hash).toArray();
     if (seen.length) return { duplicate: true, snapshot: this.snapshot() };
@@ -191,7 +223,7 @@ export class Board extends DurableObject<Env> {
         "INSERT INTO takeovers (id, status, paid_at, card) VALUES (?, 'queued', ?, ?)",
         sale.takeover_id,
         sale.received_at,
-        JSON.stringify(card),
+        JSON.stringify(this.withLogo(sale.takeover_id, card, logo)),
       );
     });
     await this.step();

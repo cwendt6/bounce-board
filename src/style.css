@@ -391,6 +391,32 @@ a:hover {
   font-size: 13px;
 }
 
+.take-dialog input[type="file"] {
+  padding: 7px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.logo-preview {
+  display: block;
+  width: 64px;
+  height: 64px;
+  margin-top: 8px;
+  border: 2px solid var(--blue);
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--screen);
+}
+
+.logo-preview[hidden] {
+  display: none;
+}
+
+img.logo {
+  object-fit: cover;
+  background: var(--screen);
+}
+
 .token-fields,
 .how-pay {
   margin-top: 14px;
