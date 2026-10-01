@@ -211,7 +211,6 @@ app.post("/api/report", async (c) => {
   } | null;
   const id = typeof body?.id === "string" ? body.id : "";
   const category = typeof body?.category === "string" ? body.category : "";
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control characters
   const note = (typeof body?.note === "string" ? body.note : "")
     .replace(/[\u0000-\u001f\u007f]/g, " ")
     .trim();
