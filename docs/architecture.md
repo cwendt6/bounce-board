@@ -38,6 +38,14 @@ If settlement succeeds but queueing fails, the server logs `SETTLED BUT NOT QUEU
 
 Config: `X402_NETWORK` and `FACILITATOR_URL` are vars in `wrangler.jsonc`. `PAY_TO_ADDRESS` is set outside the repo (`.dev.vars` locally, `wrangler secret put PAY_TO_ADDRESS` in production). `GET /api/admin/sales.csv` needs `Authorization: Bearer <ADMIN_TOKEN>` and returns 404 until `ADMIN_TOKEN` is set.
 
+## Free-plan write budget
+
+On the Workers Free plan, Durable Objects allow **100,000 SQLite rows written per day**, account-wide. Deletes count, and so do index entries, so a row in a table with a TEXT primary key costs 2. Past the limit, writes fail until 00:00 UTC.
+
+- **Rule for new features:** never write one row per item for large lists. Store blobs and use integer primary keys where possible.
+- **Per paid takeover:** roughly 15 to 20 rows (takeover, sale, logo, status updates, verdict and token-check caches, rate-limit counters). That's several thousand takeovers a day.
+- **Incident, 2026-10-01:** a throwaway probe Worker inserted 101,548 rows in one request and exhausted the day's quota. The first version of the phishing store would have done the same on every daily refresh. It was fixed before deploying.
+
 ## Rate limits
 
 Exact fixed-window counters in one SQLite Durable Object (`worker/limiter.ts`, `RateLimiter`). They're the same on any plan, unlike the approximate per-location rate-limit binding.
@@ -64,7 +72,7 @@ IPs are SHA-256 hashed before they're used as keys. Wallet and listing limits ar
 
 - **Card link** (`worker/links.ts`): blocked if the domain or any parent domain is on MetaMask's open-source phishing list (eth-phishing-detect, about 100k domains) and not whitelisted. It is also blocked if it's a one-edit look-alike of a protected brand from that list's fuzzy list (for example `metamsk.io`), a bare IP address, or a punycode (`xn--`) look-alike.
 - **Descriptions:** may not contain links or domains at all, so no wallet-connect links. The link field is the only place for a URL.
-- **Storage:** the list lives in its own Durable Object (`PhishingListStore`, SQLite) so a refresh (about 2 s) never stalls the board. A daily cron refreshes it, and it loads on first use. A refresh that looks wrong (fewer than 1,000 domains) keeps the old copy. If the list can't load, only the cheap rules apply.
+- **Storage:** the list lives in its own Durable Object (`PhishingListStore`) as a few large text chunks plus one JSON info row. Lookups use an in-memory Set built from the chunks. A refresh writes about 5 rows, and nothing when the content hash is unchanged. A daily cron refreshes it, and it loads on first use. A refresh that looks wrong (fewer than 1,000 domains) keeps the old copy. If the list can't load, only the cheap rules apply.
 - **Plan check:** probed on Cole's account on 2026-10-01. Durable Object alarms fire on the current plan (3,001 ms for a 3 s alarm), and a Durable Object loaded the full list in one request.
 
 ## Token checks
