@@ -93,6 +93,19 @@ describe("processTake", () => {
     expect(g.calls).not.toContain("settle");
   });
 
+  it("rejects a payment from the receiving wallet itself", async () => {
+    const g = fake();
+    const r = await processTake(
+      deps(g, { payload: { authorization: { from: PAY_TO.toUpperCase().replace("0X", "0x") } } }),
+      card,
+      "x",
+      "u",
+    );
+    expect(r.status).toBe(402);
+    expect(r.status === 402 && r.body.error).toMatch(/receiving wallet/);
+    expect(g.calls).not.toContain("verify");
+  });
+
   it("does not settle a payment that fails verification", async () => {
     const g = fake({ verify: async () => ({ ok: false, reason: "insufficient_funds" }) });
     const r = await processTake(deps(g), card, "x", "u");

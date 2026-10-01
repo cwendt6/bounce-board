@@ -83,6 +83,11 @@ export async function takeTheBox(
 
   const http = new x402HTTPClient(new x402Client());
   const required = http.getPaymentRequiredResponse((h) => quote.headers.get(h), quoteBody);
+  if (required.accepts.some((a) => a.payTo.toLowerCase() === address.toLowerCase())) {
+    throw new TakeError(
+      "This wallet is the board's receiving wallet. Switch to a different account in your wallet and try again.",
+    );
+  }
   const network = required.accepts[0]?.network;
   const chain = CHAINS[network];
   if (!chain) throw new TakeError(`Unsupported payment network: ${network}`);
@@ -106,7 +111,19 @@ export async function takeTheBox(
   const payer = new x402HTTPClient(client);
 
   status("Approve the $1 USDC payment in your wallet…");
-  const payload = await payer.createPaymentPayload(required);
+  const slow = window.setTimeout(
+    () =>
+      status(
+        "Still waiting for your wallet. If its window is stuck, close it, reload this page and try again.",
+      ),
+    30_000,
+  );
+  let payload: Awaited<ReturnType<typeof payer.createPaymentPayload>>;
+  try {
+    payload = await payer.createPaymentPayload(required);
+  } finally {
+    window.clearTimeout(slow);
+  }
 
   status("Settling payment…");
   const paid = await fetch(apiUrl, {

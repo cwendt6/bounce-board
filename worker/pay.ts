@@ -168,6 +168,18 @@ export async function processTake(
   if (!req)
     return { status: 402, body: { ...required, error: "payment does not match the price" } };
 
+  // Paying yourself moves no money and would log a fake sale.
+  const from = (payload.payload as { authorization?: { from?: string } })?.authorization?.from;
+  if (from && from.toLowerCase() === req.payTo.toLowerCase()) {
+    return {
+      status: 402,
+      body: {
+        ...required,
+        error: "the payer is the receiving wallet; pay from a different wallet",
+      },
+    };
+  }
+
   const v = await deps.gateway.verify(payload, req);
   if (!v.ok)
     return {
