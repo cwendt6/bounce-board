@@ -38,6 +38,19 @@ If settlement succeeds but queueing fails, the server logs `SETTLED BUT NOT QUEU
 
 Config: `X402_NETWORK` and `FACILITATOR_URL` are vars in `wrangler.jsonc`. `PAY_TO_ADDRESS` is set outside the repo (`.dev.vars` locally, `wrangler secret put PAY_TO_ADDRESS` in production). `GET /api/admin/sales.csv` needs `Authorization: Bearer <ADMIN_TOKEN>` and returns 404 until `ADMIN_TOKEN` is set.
 
+## Rate limits
+
+Exact fixed-window counters in one SQLite Durable Object (`worker/limiter.ts`, `RateLimiter`). They're the same on any plan, unlike the approximate per-location rate-limit binding.
+
+| Key | Limit | Why |
+| --- | --- | --- |
+| Take attempts per IP | 20 per 10 min | Each quote runs AI moderation; this protects the free daily budget |
+| Paid takeovers per wallet | 10 per hour | Spam control |
+| Paid takeovers per listing (holder key) | 3 per hour | Nobody walls off the board with one card |
+| Reports per IP | 10 per hour | Report flooding |
+
+IPs are SHA-256 hashed before they're used as keys. Wallet and listing limits are checked after the payment is decoded and before the facilitator is called, so a refused attempt is never charged. Over-limit requests get `429` with `Retry-After`.
+
 ## Reports and admin
 
 - **Report:** `POST /api/report {id, category, note}` (category: scam, nsfw, impersonation, hate, other; note up to 200 characters). There's a "Report this listing" button under the screen and a "report" link on each queued card. Reporters are stored only as SHA-256(IP + takeover id), so one person's repeat reports count once and no raw IPs are kept.

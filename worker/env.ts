@@ -1,9 +1,11 @@
 import type { Board } from "./board";
+import type { RateLimiter } from "./limiter";
 import type { PhishingListStore } from "./phishing";
 
 export interface Env {
   BOARD: DurableObjectNamespace<Board>;
   PHISHING: DurableObjectNamespace<PhishingListStore>;
+  LIMITER: DurableObjectNamespace<RateLimiter>;
   ASSETS: Fetcher;
   PRICE_USD: string;
   /** CAIP-2 network for payments: eip155:84532 (Base Sepolia) or eip155:8453 (Base). */

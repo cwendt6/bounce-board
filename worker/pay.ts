@@ -128,6 +128,7 @@ export function facilitatorLabel(url: string): string {
 export type TakeResult =
   | { status: 400; body: { errors: string[] } }
   | { status: 503; body: { error: string } }
+  | { status: 429; body: { error: string }; retryAfter: number }
   | { status: 402; body: PaymentRequired }
   | { status: 201; card: BoardCard; logo: Logo | null; sale: Sale; settle: SettleResponse };
 
@@ -143,6 +144,8 @@ export interface TakeDeps {
   checkToken: (card: BoardCard) => Promise<TokenCheck>;
   /** Phishing and look-alike checks on the card's link. */
   checkLink: (link: string) => Promise<LinkCheck>;
+  /** Per-wallet and per-card limits on paid takeovers; checked before verify. */
+  limitPaid: (payer: string, card: BoardCard) => Promise<{ ok: boolean; retryAfter: number }>;
 }
 
 /**
@@ -211,6 +214,20 @@ export async function processTake(
         error: "the payer is the receiving wallet; pay from a different wallet",
       },
     };
+  }
+
+  // Per-wallet and per-card limits, before any facilitator call.
+  if (from) {
+    const lim = await deps.limitPaid(from.toLowerCase(), card.card);
+    if (!lim.ok) {
+      return {
+        status: 429,
+        body: {
+          error: "Too many takeovers from this wallet or for this listing. Try again later.",
+        },
+        retryAfter: lim.retryAfter,
+      };
+    }
   }
 
   const v = await deps.gateway.verify(payload, req);
