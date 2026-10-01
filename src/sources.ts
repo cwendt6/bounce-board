@@ -3,6 +3,7 @@
  * - Live: the Worker's /api/state plus a WebSocket for snapshots and clock sync.
  * - Demo: a fixed rotation of invented holders on the wall clock (GitHub Pages preview).
  */
+import { holderKey, holderLabel, mergeCornerClub, mergeLongest } from "./core/leaderboard";
 import { cornerHits, initialPhase } from "./core/motion";
 import { DEMO_REIGN_SECONDS, reignAt, upcoming } from "./core/schedule";
 import { DEMO_CORNER_CLUB, DEMO_HOLDERS, DEMO_LONGEST_REIGN, DEMO_STATS } from "./fake-data";
@@ -62,12 +63,22 @@ export interface Snapshot {
   current: { id: string; card: CardView; startMs: number; seed: number } | null;
   queue: { id: string; card: CardView; estStartMs: number }[];
   recent: { id: string; card: CardView; startMs: number; endMs: number; corners: number }[];
-  cornerClub: { label: string; corners: number }[];
+  cornerClub: { key: string; label: string; corners: number }[];
+  currentPriorCorners: number;
   longest: { label: string; ms: number }[];
   stats: { takeovers: number; uniqueHolders: number };
 }
 
 export function snapshotToView(s: Snapshot, now: number): View {
+  const live = s.current
+    ? {
+        key: holderKey(s.current.card),
+        label: holderLabel(s.current.card),
+        startMs: s.current.startMs,
+        seed: s.current.seed,
+        priorCorners: s.currentPriorCorners,
+      }
+    : null;
   return {
     mode: "live",
     now,
@@ -78,8 +89,11 @@ export function snapshotToView(s: Snapshot, now: number): View {
       heldMs: r.endMs - r.startMs,
       corners: r.corners,
     })),
-    cornerClub: s.cornerClub,
-    longest: s.longest,
+    cornerClub: mergeCornerClub(s.cornerClub, live, now).map(({ label, corners }) => ({
+      label,
+      corners,
+    })),
+    longest: mergeLongest(s.longest, live, now),
     stats: s.stats,
   };
 }
