@@ -39,23 +39,6 @@ function $(id: string): HTMLElement {
   return el;
 }
 
-// ---------- film grain texture, generated once ----------
-
-function makeGrain(): string {
-  const c = document.createElement("canvas");
-  c.width = c.height = 160;
-  const ctx = c.getContext("2d");
-  if (!ctx) return "none";
-  const img = ctx.createImageData(c.width, c.height);
-  for (let i = 0; i < img.data.length; i += 4) {
-    const v = Math.random() * 255;
-    img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
-    img.data[i + 3] = 255;
-  }
-  ctx.putImageData(img, 0, 0);
-  return `url(${c.toDataURL()})`;
-}
-
 // ---------- the box ----------
 
 const canvas = $("canvas") as HTMLCanvasElement;
@@ -78,70 +61,152 @@ function roundRect(x: number, y: number, w: number, h: number, r: number) {
   ctx.closePath();
 }
 
-function drawBox(holder: CardView, phase: Phase, t: number) {
+const css = getComputedStyle(document.documentElement);
+const COLOR = {
+  bg: css.getPropertyValue("--bg").trim() || "#0a0a0a",
+  white: css.getPropertyValue("--screen").trim() || "#ffffff",
+  blue: css.getPropertyValue("--blue").trim() || "#0052ff",
+  orange: css.getPropertyValue("--orange").trim() || "#f7931a",
+};
+const FONT = '"Inter", ui-sans-serif, system-ui, sans-serif';
+
+function setFont(size: number) {
+  ctx.font = `700 ${Math.round(size)}px ${FONT}`;
+}
+
+/** Shrink the font until `text` fits in `maxW`; returns the size used. */
+function fitText(text: string, start: number, maxW: number): number {
+  let size = start;
+  setFont(size);
+  while (ctx.measureText(text).width > maxW && size > 8) {
+    size -= 1;
+    setFont(size);
+  }
+  return size;
+}
+
+/**
+ * Lay out a label in at most two lines: one line if it fits at a readable size,
+ * otherwise split at the most balanced space, shrinking down to `min`, then ellipsize.
+ */
+function layoutLabel(text: string, start: number, min: number, maxW: number) {
+  const one = fitText(text, start, maxW);
+  if (one >= start * 0.75 || !text.includes(" ")) {
+    if (one >= min) return { size: one, lines: [text] };
+  }
+  const words = text.split(" ");
+  let best = [text, ""];
+  let bestDiff = Number.POSITIVE_INFINITY;
+  for (let i = 1; i < words.length; i++) {
+    const a = words.slice(0, i).join(" ");
+    const b = words.slice(i).join(" ");
+    const diff = Math.abs(a.length - b.length);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = [a, b];
+    }
+  }
+  const lines = best.filter(Boolean);
+  let size = start * 0.8;
+  setFont(size);
+  const widest = () => Math.max(...lines.map((l) => ctx.measureText(l).width));
+  while (widest() > maxW && size > min) {
+    size -= 1;
+    setFont(size);
+  }
+  for (let i = 0; i < lines.length; i++) {
+    while (ctx.measureText(lines[i]).width > maxW && lines[i].length > 1) {
+      lines[i] = `${lines[i].slice(0, -2)}…`;
+    }
+  }
+  return { size, lines };
+}
+
+function drawLines(lines: string[], size: number, x: number, cy: number) {
+  setFont(size);
+  const lh = size * 1.1;
+  const top = cy - ((lines.length - 1) * lh) / 2;
+  lines.forEach((l, i) => {
+    ctx.fillText(l, x, top + i * lh + size * 0.04);
+  });
+}
+
+/**
+ * Empty board: a solid blue box with white text.
+ * Holder: a white box with a 2px blue border, logo on the left, black label.
+ * Corner flash: the box turns orange briefly (skipped with reduced motion).
+ */
+function drawBox(card: CardView, phase: Phase, t: number, empty: boolean, flashing: boolean) {
   const scale = canvas.width / SCREEN_W;
+  const dpr = canvas.width / Math.max(1, canvas.getBoundingClientRect().width);
   const p = positionAt(phase, t);
   const x = p.x * scale;
   const y = p.y * scale;
   const w = BOX_W * scale;
   const hgt = BOX_H * scale;
+  const label = boxLabel(card);
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.textBaseline = "middle";
 
-  // A colored transparency sheet on the projector: translucent fill, darker outline.
-  ctx.fillStyle = `${holder.color}cc`;
-  roundRect(x, y, w, hgt, hgt * 0.12);
+  if (empty) {
+    ctx.fillStyle = flashing ? COLOR.orange : COLOR.blue;
+    roundRect(x, y, w, hgt, hgt * 0.14);
+    ctx.fill();
+    const { size, lines } = layoutLabel(label, hgt * 0.3, hgt * 0.15, w * 0.86);
+    ctx.fillStyle = flashing ? COLOR.bg : COLOR.white;
+    ctx.textAlign = "center";
+    drawLines(lines, size, x + w / 2, y + hgt / 2);
+    return;
+  }
+
+  const border = 2 * dpr;
+  ctx.fillStyle = flashing ? COLOR.orange : COLOR.white;
+  roundRect(x + border / 2, y + border / 2, w - border, hgt - border, hgt * 0.14);
   ctx.fill();
-  ctx.lineWidth = Math.max(1, scale * 0.012);
-  ctx.strokeStyle = "rgba(40, 28, 10, 0.75)";
+  ctx.lineWidth = border;
+  ctx.strokeStyle = flashing ? COLOR.orange : COLOR.blue;
   ctx.stroke();
 
-  // Logo placeholder: circle with initials (real logos arrive with payments).
-  const r = hgt * 0.32;
-  const cx = x + hgt * 0.5;
-  const cy = y + hgt * 0.5;
-  ctx.fillStyle = "rgba(30, 22, 10, 0.85)";
+  // Logo placeholder until uploads land: initials on a blue circle.
+  const r = hgt * 0.26;
+  const cx = x + hgt * 0.42;
+  const cy = y + hgt / 2;
+  ctx.fillStyle = COLOR.blue;
   ctx.beginPath();
   ctx.arc(cx, cy, r, 0, Math.PI * 2);
   ctx.fill();
-  ctx.fillStyle = holder.color;
-  ctx.font = `${Math.round(r * 1.05)}px VT323, monospace`;
+  ctx.fillStyle = COLOR.white;
   ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(initials(holder.name), cx, cy + r * 0.06);
+  const isize = fitText(initials(card.name), r * 0.9, r * 1.5);
+  ctx.fillText(initials(card.name), cx, cy + isize * 0.04);
 
-  // Label, shrunk to fit.
-  const label = boxLabel(holder);
-  const left = x + hgt * 0.95;
-  const maxW = w - hgt * 1.1;
-  let size = hgt * 0.42;
-  ctx.font = `${Math.round(size)}px VT323, monospace`;
-  while (ctx.measureText(label).width > maxW && size > 8) {
-    size -= 1;
-    ctx.font = `${Math.round(size)}px VT323, monospace`;
-  }
-  ctx.fillStyle = "#1e160a";
+  const textX = x + hgt * 0.8;
+  const { size, lines } = layoutLabel(label, hgt * 0.3, hgt * 0.15, x + w - hgt * 0.12 - textX);
+  ctx.fillStyle = COLOR.bg;
   ctx.textAlign = "left";
-  ctx.fillText(label, left, cy + size * 0.05);
+  drawLines(lines, size, textX, cy);
 }
 
-// ---------- corner flash ----------
+// ---------- corner hit: orange flash on the box + toast ----------
 
-const flash = $("corner-flash");
-let flashTimer = 0;
+const toast = $("corner-toast");
+const FLASH_MS = 600;
+let toastTimer = 0;
+let flashUntil = 0;
 
 function showCorner(hit: CornerHit) {
-  flash.textContent = `CORNER! (${hit.corner.replace("-", " ")})`;
-  flash.classList.add("on");
-  window.clearTimeout(flashTimer);
-  flashTimer = window.setTimeout(() => flash.classList.remove("on"), 2500);
+  toast.textContent = `CORNER! ${hit.corner.replace("-", " ")}`;
+  toast.classList.add("on");
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => toast.classList.remove("on"), 2500);
+  if (!reducedMotion.matches) flashUntil = performance.now() + FLASH_MS;
 }
 
 // ---------- sidebars ----------
 
 function holderRow(holder: CardView, extra: Child[] = []): HTMLLIElement {
   const logo = h("span", { class: "logo", "aria-hidden": "true" }, initials(holder.name));
-  logo.style.background = holder.color;
   const meta: Child[] = [];
   if (holder.chain) meta.push(h("span", { class: `chain ${holder.chain}` }, holder.chain));
   if (holder.chain && holder.contract) {
@@ -216,7 +281,7 @@ function renderBoards(v: View) {
       "li",
       {},
       h("span", { class: "name" }, c.label),
-      h("span", { class: "badge" }, `◢ ${c.corners}`),
+      h("span", { class: "badge corners" }, `◢ ${c.corners}`),
     ),
   );
   $("corner-club").replaceChildren(...(club.length ? club : [emptyRow("No corner hits yet.")]));
@@ -234,7 +299,8 @@ function renderBoards(v: View) {
       h(
         "span",
         { class: "badge" },
-        `${formatDuration(r.heldMs / 1000)}${r.corners ? ` · ◢ ${r.corners}` : ""}`,
+        formatDuration(r.heldMs / 1000),
+        r.corners ? h("span", { class: "corners" }, ` ◢ ${r.corners}`) : null,
       ),
     ]),
   );
@@ -265,7 +331,6 @@ const EMPTY_CARD: CardView = {
   name: "Your name here",
   description: "",
   link: "https://example.com",
-  color: "#f2c14e",
 };
 const EMPTY_PHASE = initialPhase(1);
 
@@ -298,7 +363,7 @@ function tick() {
     }
     lastT = t;
   }
-  drawBox(cur?.card ?? EMPTY_CARD, phase, cur ? t : t % 3600);
+  drawBox(cur?.card ?? EMPTY_CARD, phase, cur ? t : t % 3600, !cur, performance.now() < flashUntil);
 
   const sec = Math.floor(v.now / 1000);
   if (sec !== lastSidebarSecond || boardsDirty) {
@@ -333,7 +398,6 @@ function start() {
 }
 
 async function main() {
-  document.documentElement.style.setProperty("--grain-url", makeGrain());
   source = await pickSource(() => {
     boardsDirty = true;
   });

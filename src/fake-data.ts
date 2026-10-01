@@ -13,7 +13,6 @@ export interface Holder {
   description: string;
   x?: string;
   link: string;
-  color: string;
 }
 
 export const DEMO_HOLDERS: Holder[] = [
@@ -26,7 +25,6 @@ export const DEMO_HOLDERS: Holder[] = [
     description: "Keeps the projector bulb warm since the last bell.",
     x: "lampoil_demo",
     link: "https://example.com/lamp-oil",
-    color: "#f2c14e",
   },
   {
     id: "h2",
@@ -37,14 +35,12 @@ export const DEMO_HOLDERS: Holder[] = [
     description: "A coin made entirely of film grain.",
     x: "grainfield_demo",
     link: "https://example.com/grainfield",
-    color: "#e07a5f",
   },
   {
     id: "h3",
     name: "Chalk Dust Studio",
     description: "Design studio. Not a token, just a brand saying hi.",
     link: "https://example.com/chalkdust",
-    color: "#81b29a",
   },
   {
     id: "h4",
@@ -55,7 +51,6 @@ export const DEMO_HOLDERS: Holder[] = [
     description: "One acetate sheet at a time.",
     x: "sheet_demo",
     link: "https://example.com/sheet",
-    color: "#7aa6d6",
   },
   {
     id: "h5",
@@ -65,7 +60,6 @@ export const DEMO_HOLDERS: Holder[] = [
     contract: "0x0c2e8d4a6b1f3e5c7a9b2d4f6e8a0c1e3b5d7f92",
     description: "Leave class, come back rich. Not financial advice.",
     link: "https://example.com/hallpass",
-    color: "#c38fd6",
   },
 ];
 
