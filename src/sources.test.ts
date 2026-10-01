@@ -31,7 +31,7 @@ describe("views", () => {
   });
 
   it("maps a live snapshot", () => {
-    const card = { name: "A", description: "", link: "https://a.example", color: "#fff" };
+    const card = { name: "A", description: "", link: "https://a.example" };
     const s: Snapshot = {
       serverNow: 5,
       current: { id: "x", card, startMs: 1, seed: 2 },

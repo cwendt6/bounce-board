@@ -3,7 +3,6 @@
  * token/link reputation checks arrive in milestone 3.
  */
 import type { Card } from "../src/core/queue";
-import { hashSeed } from "../src/core/rng";
 
 export type Chain = "base" | "solana" | "ethereum";
 
@@ -14,11 +13,9 @@ export interface BoardCard extends Card {
   ticker?: string;
   chain?: Chain;
   contract?: string;
-  color: string;
 }
 
 const CHAINS: Chain[] = ["base", "solana", "ethereum"];
-const PALETTE = ["#f2c14e", "#e07a5f", "#81b29a", "#7aa6d6", "#c38fd6", "#f4a261", "#8ecae6"];
 const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: rejecting control characters is the point
@@ -76,7 +73,6 @@ export function validateCard(input: unknown): Result {
     name,
     description,
     link: (url as URL).toString(),
-    color: PALETTE[hashSeed(name.toLowerCase()) % PALETTE.length],
   };
   if (x) card.x = x;
   if (anyToken) {

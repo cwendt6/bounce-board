@@ -4,12 +4,11 @@ import { validateCard } from "./card";
 const base = { name: "Lamp Oil", description: "Warm bulb.", link: "https://example.com/lamp" };
 
 describe("validateCard", () => {
-  it("accepts a plain brand card and assigns a color", () => {
+  it("accepts a plain brand card", () => {
     const r = validateCard(base);
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.card.name).toBe("Lamp Oil");
-      expect(r.card.color).toMatch(/^#[0-9a-f]{6}$/);
       expect(r.card.ticker).toBeUndefined();
     }
   });

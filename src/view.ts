@@ -5,7 +5,6 @@ export interface CardView {
   name: string;
   description: string;
   link: string;
-  color: string;
   x?: string;
   ticker?: string;
   chain?: Chain;

@@ -7,7 +7,10 @@
     <meta name="description" content="One box. It bounces. $1 puts your name in it until the next buyer takes over." />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap"
+      rel="stylesheet"
+    />
   </head>
   <body>
     <header class="top">
@@ -17,14 +20,10 @@
     </header>
 
     <main class="layout">
-      <section class="stage" aria-label="Projector screen">
-        <div class="room">
-          <div class="screen" id="screen">
-            <canvas id="canvas" aria-label="The bouncing box" role="img"></canvas>
-            <div class="light" aria-hidden="true"></div>
-            <div class="grain" aria-hidden="true"></div>
-            <div class="corner-flash" id="corner-flash" aria-live="polite"></div>
-          </div>
+      <section class="stage" aria-label="Screen">
+        <div class="screen" id="screen">
+          <canvas id="canvas" aria-label="The bouncing box" role="img"></canvas>
+          <div class="corner-toast" id="corner-toast" aria-live="polite"></div>
         </div>
         <div class="now-holding" id="now-holding" aria-live="polite"></div>
       </section>
@@ -35,7 +34,7 @@
         <button class="take" type="button" disabled title="Payments arrive in milestone 2 (testnet)">
           Take the box ($1)
         </button>
-        <p class="fine">Payments: USDC on Base and Solana, coming soon.</p>
+        <p class="fine">Payments: USDC on Base, coming soon.</p>
       </aside>
 
       <aside class="side boards" aria-label="Leaderboards">
