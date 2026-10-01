@@ -35,6 +35,7 @@
           Take the box ($1)
         </button>
         <p class="fine">Payments: USDC on Base, coming soon.</p>
+        <p class="fine">One signed $1.00 USDC transfer. No token approvals.</p>
       </aside>
 
       <aside class="side boards" aria-label="Leaderboards">
@@ -82,6 +83,16 @@
           <label>Contract address
             <input name="contract" maxlength="64" autocomplete="off" spellcheck="false" />
           </label>
+        </details>
+        <details class="how-pay">
+          <summary>How payments work</summary>
+          <ul>
+            <li>Your wallet signs one USDC transfer of exactly $1.00 to the board's receiving address. The address is shown before you sign.</li>
+            <li>It is not a token approval. It can't move any other tokens or any more USDC, and it expires about 2 minutes after you sign.</li>
+            <li>A payment service (<a href="https://www.x402.org/" target="_blank" rel="noopener noreferrer">x402</a>) submits the transfer on Base and pays the gas. You only need USDC.</li>
+            <li>Your takeover is queued only after the transfer settles.</li>
+            <li>The code is public: <a href="https://github.com/cwendt6/bounce-board" target="_blank" rel="noopener noreferrer">github.com/cwendt6/bounce-board</a>.</li>
+          </ul>
         </details>
         <p class="fine">Paid placement, not an endorsement and not financial advice.</p>
         <p class="take-status" id="take-status" role="status" aria-live="polite"></p>
