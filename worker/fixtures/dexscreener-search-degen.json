@@ -1,0 +1,189 @@
+{
+  "schemaVersion": "1.0.0",
+  "pairs": [
+    {
+      "chainId": "robinhood",
+      "dexId": "uniswap",
+      "pairAddress": "0xCa85629e9878D62057902EEAB0209A24A68dFe48",
+      "baseToken": {
+        "address": "0x2154aE01F121917454402938EA997F65Fb23b6F6",
+        "name": "Degen",
+        "symbol": "DEGEN"
+      },
+      "quoteToken": {
+        "address": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+        "name": "WETH",
+        "symbol": "WETH"
+      },
+      "liquidity": {
+        "usd": 41332707.29,
+        "base": 18250187912,
+        "quote": 0.0004484
+      },
+      "fdv": 82665415,
+      "marketCap": 82665415,
+      "pairCreatedAt": 1783759768000
+    },
+    {
+      "chainId": "robinhood",
+      "dexId": "uniswap",
+      "pairAddress": "0x6c99A3c8E24b90680b7a7A414557877Cc83E7AD4",
+      "baseToken": {
+        "address": "0x81b9F1d9f0e6bB69e1F52b62dAE3FA3543F586e8",
+        "name": "Degen Arena",
+        "symbol": "DEGEN"
+      },
+      "quoteToken": {
+        "address": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+        "name": "WETH",
+        "symbol": "WETH"
+      },
+      "liquidity": {
+        "usd": 31822218.94,
+        "base": 499999985,
+        "quote": 0.0003379
+      },
+      "fdv": 63644438,
+      "marketCap": 63644438,
+      "pairCreatedAt": 1784085690000
+    },
+    {
+      "chainId": "robinhood",
+      "dexId": "uniswap",
+      "pairAddress": "0x531EA3498C5aDB89cF095efD0AC6BC984FdA3838",
+      "baseToken": {
+        "address": "0xE603A8A8020AC5D3740e8FB9D85de4F1Ce6B3142",
+        "name": "DEGEN",
+        "symbol": "DGEN"
+      },
+      "quoteToken": {
+        "address": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+        "name": "WETH",
+        "symbol": "WETH"
+      },
+      "liquidity": {
+        "usd": 3759446.77,
+        "base": 499999919,
+        "quote": 0.0002265
+      },
+      "fdv": 7518894,
+      "marketCap": 7518894,
+      "pairCreatedAt": 1784123087000
+    },
+    {
+      "chainId": "base",
+      "dexId": "uniswap",
+      "pairAddress": "0x0cA6485b7e9cF814A3Fd09d81672B07323535b64",
+      "baseToken": {
+        "address": "0x4ed4E862860beD51a9570b96d89aF5E1B0Efefed",
+        "name": "Degen",
+        "symbol": "DEGEN"
+      },
+      "quoteToken": {
+        "address": "0x4200000000000000000000000000000000000006",
+        "name": "Wrapped Ether",
+        "symbol": "WETH"
+      },
+      "liquidity": {
+        "usd": 874693.34,
+        "base": 608784696,
+        "quote": 80.7445
+      },
+      "fdv": 38970526,
+      "marketCap": 38970526,
+      "pairCreatedAt": 1705088299000
+    },
+    {
+      "chainId": "robinhood",
+      "dexId": "uniswap",
+      "pairAddress": "0x5408AD4b4F1D5091B99953Af963500a792f47bc3",
+      "baseToken": {
+        "address": "0x0830A9Dd26a04e959657AB6788d45f5725590c32",
+        "name": "DEGEN",
+        "symbol": "DEGEN"
+      },
+      "quoteToken": {
+        "address": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+        "name": "WETH",
+        "symbol": "WETH"
+      },
+      "liquidity": {
+        "usd": 263736.02,
+        "base": 170962341,
+        "quote": 28.6483
+      },
+      "fdv": 1388961,
+      "marketCap": 1388961,
+      "pairCreatedAt": 1789721160000
+    },
+    {
+      "chainId": "base",
+      "dexId": "uniswap",
+      "pairAddress": "0xc9034c3E7F58003E6ae0C8438e7c8f4598d5ACAA",
+      "baseToken": {
+        "address": "0x4ed4E862860beD51a9570b96d89aF5E1B0Efefed",
+        "name": "Degen",
+        "symbol": "DEGEN"
+      },
+      "quoteToken": {
+        "address": "0x4200000000000000000000000000000000000006",
+        "name": "Wrapped Ether",
+        "symbol": "WETH"
+      },
+      "liquidity": {
+        "usd": 126725.45,
+        "base": 66241527,
+        "quote": 20.6097
+      },
+      "fdv": 38779293,
+      "marketCap": 38779293,
+      "pairCreatedAt": 1704655845000
+    },
+    {
+      "chainId": "solana",
+      "dexId": "meteora",
+      "pairAddress": "BWqRj64nHG5KKpY4Z4KYHmtx3zF6c3qNAhiZBZk9DnP2",
+      "baseToken": {
+        "address": "A7n89LqW67HJKzJkdWZa2xojuK4N5GBKHz3dfjATCZPz",
+        "name": "Degen",
+        "symbol": "DEGEN"
+      },
+      "quoteToken": {
+        "address": "So11111111111111111111111111111111111111112",
+        "name": "Wrapped SOL",
+        "symbol": "SOL"
+      },
+      "liquidity": {
+        "usd": 116113.44,
+        "base": 65934529,
+        "quote": 363.008216
+      },
+      "fdv": 76850,
+      "marketCap": 39784847,
+      "pairCreatedAt": 1737565737000
+    },
+    {
+      "chainId": "ethereum",
+      "dexId": "uniswap",
+      "pairAddress": "0xd3790305e6532a055672e21444051588db44f58cfffd96d7319a1288314dfa37",
+      "baseToken": {
+        "address": "0xf1C11bd495a1c50532a972168fcA33Fc1C11ef35",
+        "name": "Degen",
+        "symbol": "DEGEN"
+      },
+      "quoteToken": {
+        "address": "0x0000000000000000000000000000000000000000",
+        "name": "Ether",
+        "symbol": "ETH"
+      },
+      "liquidity": {
+        "usd": 75581.76,
+        "base": 685357543,
+        "quote": 3.5426
+      },
+      "fdv": 94051,
+      "marketCap": 69942,
+      "pairCreatedAt": 1785707315000
+    }
+  ]
+}

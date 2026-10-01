@@ -63,6 +63,7 @@ function deps(gateway: Gateway, payload: Partial<PaymentPayload> = {}): TakeDeps
     newId: () => "sale-1",
     decodePayment: () => ({ x402Version: 2, accepted: req, payload: {}, ...payload }),
     moderate: async () => ({ ok: true }),
+    checkToken: async () => ({ ok: true, status: "verified" }),
   };
 }
 
@@ -71,6 +72,24 @@ describe("processTake", () => {
     const g = fake();
     const r = await processTake(deps(g), { name: "" }, null, "u");
     expect(r.status).toBe(400);
+    expect(g.calls).toEqual([]);
+  });
+
+  it("rejects a fake token before moderation or quoting", async () => {
+    const g = fake();
+    let moderated = false;
+    const d = {
+      ...deps(g),
+      checkToken: async () => ({ ok: false as const, reason: "this contract looks like a copy" }),
+      moderate: async () => {
+        moderated = true;
+        return { ok: true as const };
+      },
+    };
+    const r = await processTake(d, card, null, "u");
+    expect(r.status).toBe(400);
+    expect(r.status === 400 && r.body.errors[0]).toMatch(/token check: .*copy/);
+    expect(moderated).toBe(false);
     expect(g.calls).toEqual([]);
   });
 

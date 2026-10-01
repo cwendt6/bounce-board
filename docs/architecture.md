@@ -38,6 +38,19 @@ If settlement succeeds but queueing fails, the server logs `SETTLED BUT NOT QUEU
 
 Config: `X402_NETWORK` and `FACILITATOR_URL` are vars in `wrangler.jsonc`. `PAY_TO_ADDRESS` is set outside the repo (`.dev.vars` locally, `wrangler secret put PAY_TO_ADDRESS` in production). `GET /api/admin/sales.csv` needs `Authorization: Bearer <ADMIN_TOKEN>` and returns 404 until `ADMIN_TOKEN` is set.
 
+## Token checks
+
+Cards that list a token (ticker, chain, contract) are checked against DexScreener's public API before moderation and before the price quote (`worker/tokens.ts`):
+
+1. The ticker must match the token actually at that contract. The address may be on either side of a pair.
+2. The token's pools must hold at least $1,000 of liquidity in total.
+3. No much bigger token with that ticker may live at a different address on the same chain: at least $100k of liquidity and 10x the submitted token's. This is the fake-CA check. Tickers repeat across chains legitimately, so other chains are never compared.
+
+- **Failures:** each one is rejected with a plain reason.
+- **DexScreener unreachable:** the card is allowed and shown with an orange "unverified" badge. The result is set by the server only.
+- **Caching:** results are cached for 10 minutes in the Durable Object. The API allows 60 requests a minute.
+- **Fixtures:** response shapes are pinned by fixtures in `worker/fixtures/` (trimmed real responses for USDC and DEGEN). `TOKEN_CHECKS=off` exists only for tests and offline dev.
+
 ## Moderation
 
 - **When:** every card and logo is checked before a price is quoted (`POST /api/take` and the dev endpoint), so nobody pays for a takeover that would be rejected.

@@ -235,6 +235,15 @@ function holderRow(holder: CardView, extra: Child[] = []): HTMLLIElement {
     : h("span", { class: "logo", "aria-hidden": "true" }, initials(holder.name));
   const meta: Child[] = [];
   if (holder.chain) meta.push(h("span", { class: `chain ${holder.chain}` }, holder.chain));
+  if (holder.tokenCheck === "unverified") {
+    meta.push(
+      h(
+        "span",
+        { class: "chain unverified", title: "Token checks couldn't run for this listing" },
+        "unverified",
+      ),
+    );
+  }
   if (holder.chain && holder.contract) {
     const ca = holder.contract;
     const btn = h(

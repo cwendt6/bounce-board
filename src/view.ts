@@ -11,6 +11,8 @@ export interface CardView {
   contract?: string;
   /** Server-relative logo URL ("/api/logo/<id>"), set by the server only. */
   logo?: string;
+  /** "unverified" when the token checks couldn't run (shown as a badge). */
+  tokenCheck?: "verified" | "unverified";
 }
 
 export interface View {

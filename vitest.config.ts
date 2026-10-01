@@ -28,6 +28,7 @@ export default defineConfig({
                 ADMIN_TOKEN: "test-admin-token",
                 PAY_TO_ADDRESS: "",
                 MODERATION: "off",
+                TOKEN_CHECKS: "off",
               },
             },
           }),
