@@ -121,7 +121,7 @@ Cards that list a token (ticker, chain, contract) are checked against DexScreene
 - **On the server** (`worker/logo.ts`): it trusts nothing from the page. It checks the declared type against the magic bytes and enforces the 500 KB cap. SVG is never accepted, because SVGs can carry scripts.
 - **Storage:** the logo is stored in the Durable Object's SQLite in the same transaction as the takeover (and the sale). The card's `logo` field is always set by the server (`/api/logo/<takeover id>`), never taken from buyer input.
 - **Serving:** `GET /api/logo/:id` returns the exact content type, `X-Content-Type-Options: nosniff` and `Content-Security-Policy: default-src 'none'; sandbox`. It uses a 5-minute cache (`public, max-age=300`) plus the edge cache on the custom domain. When the admin removes a listing, its logo is deleted.
-- **Size:** the server reads pixel dimensions from the header (PNG IHDR, JPEG SOFn, WebP VP8, VP8L and VP8X) and refuses anything over 512x512. Huge canvases could crash viewers' browsers. Chrome's canvas encoder writes VP8X WebP, which is covered by real-image fixtures in `worker/fixtures/canvas-images.json`.
+- **Size:** the server reads pixel dimensions from the header (PNG IHDR, JPEG SOFn, WebP VP8, VP8L and VP8X) and refuses anything over 512x512. A JPEG must have exactly one frame header before its image data, because browsers disagree on which of several to use. Huge canvases could crash viewers' browsers. Chrome's canvas encoder writes VP8X WebP, which is covered by real-image fixtures in `worker/fixtures/canvas-images.json`.
 - Image moderation comes in M3.
 
 ## Sales log (bookkeeping)

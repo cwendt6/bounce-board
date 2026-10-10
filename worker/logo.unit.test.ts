@@ -106,15 +106,43 @@ describe("logos", () => {
     expect(parseLogo(`data:image/webp;base64,${b64(vp8l(4096, 4096))}`).ok).toBe(false);
   });
 
+  /** An SOF0 segment (3 components) declaring w x h. */
+  const sof0 = (w: number, h: number) => [
+    0xff,
+    0xc0,
+    0x00,
+    0x11,
+    0x08,
+    h >> 8,
+    h & 0xff,
+    w >> 8,
+    w & 0xff,
+    0x03,
+    ...Array(9).fill(0x11),
+  ];
+  const SOS = [0xff, 0xda, 0x00, 0x0c, ...Array(10).fill(0), 0x12, 0x34];
+
   it("can't be fooled by JPEG fill bytes hiding the real frame size", () => {
-    // SOI, then FF FF FF before an SOF0 marker declaring 4000x4000.
-    const sof = [0xff, 0xff, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x0f, 0xa0, 0x0f, 0xa0, 0x03];
-    const jpeg = [0xff, 0xd8, ...sof, ...Array(20).fill(0)];
+    // SOI, then FF FF before an SOF0 marker declaring 4000x4000.
+    const jpeg = [0xff, 0xd8, 0xff, 0xff, ...sof0(4000, 4000), ...SOS];
     expect(dimensions(Uint8Array.from(jpeg), "image/jpeg")).toEqual({ width: 4000, height: 4000 });
     expect(parseLogo(`data:image/jpeg;base64,${b64(jpeg)}`).ok).toBe(false);
     // FF 00 is not a marker: fail closed.
     const odd = [0xff, 0xd8, 0xff, 0x00, ...Array(20).fill(0)];
     expect(dimensions(Uint8Array.from(odd), "image/jpeg")).toBeNull();
+  });
+
+  it("refuses a JPEG with two frame headers (a small one could hide a huge one)", () => {
+    const two = [0xff, 0xd8, ...sof0(256, 256), ...sof0(8000, 8000), ...SOS];
+    expect(dimensions(Uint8Array.from(two), "image/jpeg")).toBeNull();
+    expect(parseLogo(`data:image/jpeg;base64,${b64(two)}`).ok).toBe(false);
+    // Exactly one, followed by the scan: fine.
+    const one = [0xff, 0xd8, ...sof0(256, 256), ...SOS];
+    expect(dimensions(Uint8Array.from(one), "image/jpeg")).toEqual({ width: 256, height: 256 });
+    // No scan at all, or end of image before it: fail closed.
+    expect(dimensions(Uint8Array.from([0xff, 0xd8, ...sof0(256, 256)]), "image/jpeg")).toBeNull();
+    const eoi = [0xff, 0xd8, ...sof0(256, 256), 0xff, 0xd9, ...SOS];
+    expect(dimensions(Uint8Array.from(eoi), "image/jpeg")).toBeNull();
   });
 
   it("refuses an image whose size can't be read", () => {

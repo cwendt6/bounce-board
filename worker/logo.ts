@@ -46,22 +46,31 @@ export function dimensions(
     return { width: view.getUint32(16), height: view.getUint32(20) };
   }
   if (mime === "image/jpeg") {
+    // Walk every header segment up to the image data (SOS) and require exactly one frame
+    // header (SOF). Decoders differ on which of several SOFs they use (libjpeg-turbo refuses
+    // a second one, Apple ImageIO renders the last), so a small first SOF could hide a huge
+    // image from this check.
     let i = 2;
-    while (i + 9 < b.length) {
+    let frame: { width: number; height: number } | null = null;
+    while (i + 3 < b.length) {
       if (b[i] !== 0xff) return null;
       // Skip 0xFF fill bytes before a marker, as decoders do (otherwise a crafted file could
       // hide its real frame size from this scan).
-      while (b[i + 1] === 0xff && i + 10 < b.length) i++;
+      while (b[i + 1] === 0xff && i + 4 < b.length) i++;
       const marker = b[i + 1];
-      if (marker === 0x00) return null;
+      if (marker === 0x00 || marker === 0xd9) return null; // stuffed byte, or EOI before SOS
+      if (marker === 0xda) return frame; // start of scan: the headers are done
       if (marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) {
         i += 2;
         continue;
       }
       const len = u16be(b, i + 2);
-      const isSof = marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker);
-      if (isSof) return { height: u16be(b, i + 5), width: u16be(b, i + 7) };
       if (len < 2) return null;
+      const isSof = marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker);
+      if (isSof) {
+        if (frame || i + 8 >= b.length) return null;
+        frame = { height: u16be(b, i + 5), width: u16be(b, i + 7) };
+      }
       i += 2 + len;
     }
     return null;
