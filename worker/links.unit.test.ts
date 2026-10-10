@@ -89,10 +89,12 @@ describe("link checks", () => {
     expect(registrableDomain("x.metamask.up.railway.app")).toBe("metamask.up.railway.app");
   });
 
-  it("blocks the exact brand as a subdomain label, on shared hosts and elsewhere", () => {
+  it("blocks the exact brand as a subdomain label on shared hosts only", () => {
     expect(checkLink("https://metamask.evil.workers.dev/", list).ok).toBe(false);
     expect(checkLink("https://metamask.proj.pages.dev/", list).ok).toBe(false);
-    expect(checkLink("https://metamask.example.com/", list).ok).toBe(false);
+    expect(checkLink("https://metamask.s3.us-east-1.amazonaws.com/", list).ok).toBe(false);
+    // A normal domain's subdomains are its owner's (ethereum.stackexchange.com).
+    expect(checkLink("https://opensea.example.com/", list)).toEqual({ ok: true });
     expect(checkLink("https://app.example.com/", list)).toEqual({ ok: true });
   });
 
@@ -102,7 +104,13 @@ describe("link checks", () => {
       isWhitelisted: () => false,
       fuzzylist: () => ({ entries: ["uniswap.org", "dydx.exchange"], tolerance: 2 }),
     };
-    for (const ok of ["https://unisat.io/", "https://dx.com/", "https://dyn.com/"]) {
+    // dydy is one edit from dydx: allowed, because short brand labels need an exact match.
+    for (const ok of [
+      "https://unisat.io/",
+      "https://dx.com/",
+      "https://dyn.com/",
+      "https://dydy.com/",
+    ]) {
       expect(checkLink(ok, loose), ok).toEqual({ ok: true });
     }
     expect(checkLink("https://unisvap.org/", loose).ok).toBe(false);
@@ -111,6 +119,12 @@ describe("link checks", () => {
 
   it("allows official alternate domains of protected brands", () => {
     expect(checkLink("https://metamask.github.io/test-dapp/", list)).toEqual({ ok: true });
+    const eth: PhishingLookup = {
+      ...list,
+      fuzzylist: () => ({ entries: ["launchpad.ethereum.org"], tolerance: 1 }),
+    };
+    expect(checkLink("https://ethereum.github.io/", eth)).toEqual({ ok: true });
+    expect(checkLink("https://ethereum.stackexchange.com/", eth)).toEqual({ ok: true });
   });
 
   it("refuses single-label hosts, including ones with a trailing dot", () => {

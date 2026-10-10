@@ -74,6 +74,7 @@ export const HOSTING_SUFFIXES = new Set([
   "railway.app",
   "up.railway.app",
   "s3.amazonaws.com",
+  "amazonaws.com",
   "cloudfront.net",
   "azurestaticapps.net",
   "ngrok.io",
@@ -140,7 +141,11 @@ export function levenshtein(a: string, b: string, max = Number.POSITIVE_INFINITY
 const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
 
 /** Official domains of fuzzylist brands that the label rule below would otherwise block. */
-export const OFFICIAL_ALTERNATES = new Set(["metamask.github.io", "ethereum.foundation"]);
+export const OFFICIAL_ALTERNATES = new Set([
+  "metamask.github.io",
+  "ethereum.github.io",
+  "ethereum.foundation",
+]);
 
 export function checkLink(link: string, list: PhishingLookup | null): LinkCheck {
   let host: string;
@@ -163,11 +168,14 @@ export function checkLink(link: string, list: PhishingLookup | null): LinkCheck 
   // Look-alikes: compare the registrable domain's main label (login.metamsk.io -> "metamsk")
   // with each protected brand minus its TLD ("metamask"). Distance 0 counts too, so
   // metamask.app is caught; the brand's own domain (and anything whitelisted) is allowed.
-  // Subdomain labels must not be the brand exactly (metamask.evil.workers.dev).
+  // On shared hosting, subdomain labels must not be the brand exactly either
+  // (metamask.evil.workers.dev). Elsewhere subdomains belong to the domain's owner, and
+  // names like ethereum.stackexchange.com are normal.
   const registrable = registrableDomain(host);
   if (OFFICIAL_ALTERNATES.has(registrable)) return { ok: true };
   const label = registrable.split(".")[0];
-  const subLabels = host.slice(0, -registrable.length).split(".").filter(Boolean);
+  const shared = HOSTING_SUFFIXES.has(registrable.slice(label.length + 1));
+  const subLabels = shared ? host.slice(0, -registrable.length).split(".").filter(Boolean) : [];
   const { entries, tolerance } = list.fuzzylist();
   for (const brand of entries) {
     const brandDomain = registrableDomain(brand);

@@ -26,7 +26,18 @@ export interface TakeCardInput {
   logo?: string;
 }
 
-export class TakeError extends Error {}
+export class TakeError extends Error {
+  /** The payment was signed and may still settle: the buyer must not pay again. */
+  pending = false;
+  tx: string | null = null;
+}
+
+function pendingError(message: string, tx: string | null): TakeError {
+  const e = new TakeError(message);
+  e.pending = true;
+  e.tx = tx;
+  return e;
+}
 
 type Status = (msg: string) => void;
 
@@ -131,11 +142,29 @@ export async function takeTheBox(
   }
 
   status("Settling payment…");
-  const paid = await fetch(apiUrl, {
-    method: "POST",
-    headers: { ...headers, ...payer.encodePaymentSignatureHeader(payload) },
-    body,
-  });
+  let paid: Response;
+  try {
+    paid = await fetch(apiUrl, {
+      method: "POST",
+      headers: { ...headers, ...payer.encodePaymentSignatureHeader(payload) },
+      body,
+    });
+  } catch {
+    throw pendingError(
+      "The connection dropped while your payment was settling. It may still go through, so do not pay again. Check your wallet in a few minutes.",
+      null,
+    );
+  }
+  if (paid.status === 202) {
+    const b = (await paid.json().catch(() => null)) as {
+      error?: string;
+      tx?: string | null;
+    } | null;
+    throw pendingError(
+      b?.error ?? "We could not confirm your payment. Do not pay again.",
+      b?.tx ?? null,
+    );
+  }
   if (paid.status !== 201) throw new TakeError(await errorText(paid));
   const result = (await paid.json()) as { tx: string };
   return { tx: result.tx };

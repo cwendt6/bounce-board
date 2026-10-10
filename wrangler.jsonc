@@ -20,6 +20,10 @@
     { "tag": "v2", "new_sqlite_classes": ["PhishingListStore"] },
     { "tag": "v3", "new_sqlite_classes": ["RateLimiter"] }
   ],
+  // Workers Logs keeps our own log lines (SETTLE OUTCOME UNKNOWN, SETTLED BUT NOT QUEUED) for
+  // a few days. Invocation logs stay off so request headers (admin token, payment signatures)
+  // are never stored.
+  "observability": { "enabled": true, "logs": { "enabled": true, "invocation_logs": false } },
   // Daily refresh of the phishing list (MetaMask eth-phishing-detect).
   "triggers": { "crons": ["17 7 * * *"] },
   "vars": {

@@ -71,11 +71,15 @@ async function remove(id: string, label: string) {
   }
 }
 
-async function refresh() {
-  const state = (await (await fetch(`${API}/state`)).json()) as Snapshot;
+const label = (c: { name: string; ticker?: string }) =>
+  c.ticker ? `$${c.ticker} (${c.name})` : c.name;
+
+/** The live holder and queue. The kill switch needs only this, not the reports. */
+async function loadState() {
+  const res = await fetch(`${API}/state`);
+  if (!res.ok) throw new Error(`Couldn't load the board (${res.status}).`);
+  const state = (await res.json()) as Snapshot;
   currentId = state.current?.id ?? null;
-  const label = (c: { name: string; ticker?: string }) =>
-    c.ticker ? `$${c.ticker} (${c.name})` : c.name;
   currentLabel = state.current ? label(state.current.card) : "";
   $("current").textContent = state.current
     ? `${label(state.current.card)} · ${state.current.card.link}`
@@ -90,6 +94,10 @@ async function refresh() {
         )
       : [li("Nobody queued.")]),
   );
+}
+
+async function refresh() {
+  await loadState();
   const reports = (await api("/admin/reports")) as {
     takeoverId: string;
     card: { name: string; ticker?: string; link: string };
@@ -138,28 +146,29 @@ $("token-form").addEventListener("submit", (e) => {
 });
 
 $("kill").addEventListener("click", async () => {
-  const reason = ($("kill-reason") as HTMLInputElement).value || "removed by admin";
+  const killButton = $("kill") as HTMLButtonElement;
+  if (killButton.disabled) return;
+  killButton.disabled = true; // one kill at a time: a double click must not open two dialogs
   try {
+    const reason = ($("kill-reason") as HTMLInputElement).value || "removed by admin";
     // Load the live holder first: this page doesn't poll, so what it shows may be old.
-    await refresh();
-  } catch (e) {
-    say((e as Error).message, true);
-    return;
-  }
-  const id = currentId;
-  if (!id) {
-    say("Nobody is holding the box.", true);
-    return;
-  }
-  if (!confirm(`Remove ${currentLabel} now? Reason: ${reason}`)) return;
-  try {
+    await loadState();
+    const id = currentId;
+    if (!id) {
+      say("Nobody is holding the box.", true);
+      return;
+    }
+    if (!confirm(`Remove ${currentLabel} now? Reason: ${reason}`)) return;
     // The server only removes this exact holder, so a change during the dialog is safe.
     await api("/admin/kill", { method: "POST", body: JSON.stringify({ id, reason }) });
     say("Current holder removed.");
-    await refresh();
   } catch (e) {
     say((e as Error).message, true);
+    return;
+  } finally {
+    killButton.disabled = false;
   }
+  await refresh().catch((e: Error) => say(e.message, true));
 });
 
 if (token) unlock();

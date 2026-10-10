@@ -523,6 +523,8 @@ function setupTakeDialog() {
 
   // Logo: prepared (cropped and re-encoded) as soon as it's picked, so errors show early.
   let logoData: string | null = null;
+  /** Set once a signed payment may still settle; the page must be reloaded to pay again. */
+  let pendingPayment = false;
   const preview = $("logo-preview") as HTMLImageElement;
   const fileInput = form.elements.namedItem("logo") as HTMLInputElement;
   fileInput.addEventListener("change", async () => {
@@ -565,6 +567,7 @@ function setupTakeDialog() {
       say("Name and link are required.", true);
       return;
     }
+    if (pendingPayment) return;
     submit.disabled = true;
     try {
       const { takeTheBox } = await import("./pay-client");
@@ -582,6 +585,30 @@ function setupTakeDialog() {
       logoData = null;
       preview.hidden = true;
     } catch (err) {
+      const pending = err as { pending?: boolean; tx?: string | null; message?: string };
+      if (pending.pending) {
+        // A payment may be in flight. Keep the button off so nobody signs a second one.
+        pendingPayment = true;
+        status.replaceChildren(
+          `${pending.message ?? "Your payment may still go through. Do not pay again."} Reload the page once you have checked your wallet.`,
+          ...(pending.tx
+            ? [
+                " ",
+                h(
+                  "a",
+                  {
+                    href: `${EXPLORER_TX}${pending.tx}`,
+                    target: "_blank",
+                    rel: "noopener noreferrer",
+                  },
+                  "View transaction",
+                ),
+              ]
+            : []),
+        );
+        status.classList.add("error");
+        return;
+      }
       const code = (err as { code?: number }).code;
       say(
         code === 4001
@@ -590,7 +617,7 @@ function setupTakeDialog() {
         true,
       );
     } finally {
-      submit.disabled = false;
+      submit.disabled = pendingPayment;
     }
   });
 }

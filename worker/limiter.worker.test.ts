@@ -66,7 +66,7 @@ describe("peek and hitAll", () => {
     expect((await l.hit("free", rule, t)).ok).toBe(false);
   });
 
-  it("unhitAll gives back one hit per key, never below zero", async () => {
+  it("unhitAll gives back exactly one hit per key", async () => {
     const l = limiter("unhit");
     const t = Date.UTC(2026, 9, 1, 12, 0, 0);
     const keys = [
@@ -76,11 +76,19 @@ describe("peek and hitAll", () => {
     for (let i = 0; i < 3; i++) await l.hitAll(keys, t);
     expect((await l.peek("u1", rule, t)).ok).toBe(false);
     await l.unhitAll(keys, t);
+    // One slot back, not the whole window.
     expect((await l.hitAll(keys, t)).ok).toBe(true);
-    // An empty window stays at zero.
-    await l.unhitAll([{ key: "never", rule }], t);
-    for (let i = 0; i < 3; i++) expect((await l.hit("never", rule, t)).ok).toBe(true);
-    expect((await l.hit("never", rule, t)).ok).toBe(false);
+    expect((await l.hitAll(keys, t)).ok).toBe(false);
+  });
+
+  it("unhitAll never takes a count below zero", async () => {
+    const l = limiter("unhit-floor");
+    const t = Date.UTC(2026, 9, 1, 12, 0, 0);
+    await l.hit("f", rule, t);
+    await l.unhitAll([{ key: "f", rule }], t);
+    await l.unhitAll([{ key: "f", rule }], t); // a double release must not make room for 4
+    for (let i = 0; i < 3; i++) expect((await l.hit("f", rule, t)).ok).toBe(true);
+    expect((await l.hit("f", rule, t)).ok).toBe(false);
   });
 });
 

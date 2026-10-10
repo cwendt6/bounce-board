@@ -2,8 +2,10 @@ import type { PaymentPayload, PaymentRequired, PaymentRequirements } from "@x402
 import { describe, expect, it } from "vitest";
 import {
   BASE_SEPOLIA,
+  classifySettle,
   type Gateway,
   type PayConfig,
+  paymentDeadline,
   processTake,
   type Sale,
   salesCsv,
@@ -65,14 +67,16 @@ function fake(over: Partial<Gateway> = {}): Gateway & { calls: string[] } {
 function deps(
   gateway: Gateway,
   payload: Partial<PaymentPayload> = {},
-): TakeDeps & { ran: string[]; limitedPayer: string[]; clock: { t: number } } {
+): TakeDeps & { ran: string[]; limitedPayer: string[]; clock: { t: number }; ats: number[] } {
   const ran: string[] = [];
   const limitedPayer: string[] = [];
   const clock = { t: NOW };
+  const ats: number[] = [];
   return {
     ran,
     limitedPayer,
     clock,
+    ats,
     gateway,
     cfg,
     now: () => clock.t,
@@ -95,13 +99,15 @@ function deps(
       limitedPayer.push(payer);
       return { ok: true, retryAfter: 0 };
     },
-    commitPaid: async (payer) => {
+    commitPaid: async (payer, _card, at) => {
       ran.push("commit");
       limitedPayer.push(payer);
+      ats.push(at);
       return { ok: true, retryAfter: 0 };
     },
-    releasePaid: async () => {
+    releasePaid: async (_payer, _card, at) => {
       ran.push("release");
+      ats.push(at);
     },
   };
 }
@@ -268,7 +274,20 @@ describe("processTake", () => {
     const r = await processTake(slow, card, "x", "u");
     expect(r.status).toBe(402);
     expect(d.ran).not.toContain("commit");
+    expect(d.ran).not.toContain("release");
     expect(g.calls).not.toContain("settle");
+  });
+
+  it("refuses a mixed payload whose real (Permit2) deadline is too short", async () => {
+    const g = fake();
+    const d = deps(g, {
+      payload: {
+        authorization: { validBefore: "9999999999" },
+        permit2Authorization: { deadline: String(NOW_SEC + 10) },
+      },
+    });
+    expect((await processTake(d, card, "x", "u")).status).toBe(402);
+    expect(d.ran).toEqual(["link"]);
   });
 
   it("refuses a payload with no deadline instead of skipping the check", async () => {
@@ -327,15 +346,72 @@ describe("processTake", () => {
     const g = fake({
       settle: async () => ({
         success: false,
-        errorReason: "nonce_used",
+        errorReason: "insufficient_funds",
         transaction: "",
         network: BASE_SEPOLIA,
       }),
     });
     const d = deps(g);
+    const slowSettle = {
+      ...d,
+      gateway: {
+        ...g,
+        settle: async (...a: Parameters<Gateway["settle"]>) => {
+          d.clock.t += 5_000; // the release must undo the same window the commit used
+          return g.settle(...a);
+        },
+      },
+    };
+    const r = await processTake(slowSettle, card, "x", "u");
+    expect(r.status).toBe(402);
+    expect(r.status === 402 && r.body.error).toMatch(/not been charged/);
+    expect(d.ran.slice(-2)).toEqual(["commit", "release"]);
+    expect(d.ats[0]).toBe(d.ats[1]);
+  });
+
+  it("gives the quota back for a refusal thrown as a 4xx SettleError with no tx", async () => {
+    const g = fake({
+      settle: async () => {
+        throw Object.assign(new Error("insufficient_funds"), {
+          name: "SettleError",
+          statusCode: 400,
+          errorReason: "insufficient_funds",
+          transaction: "",
+        });
+      },
+    });
+    const d = deps(g);
     const r = await processTake(d, card, "x", "u");
     expect(r.status).toBe(402);
     expect(d.ran.slice(-2)).toEqual(["commit", "release"]);
+  });
+
+  it("gives the quota back for a transfer that was mined and reverted", async () => {
+    const g = fake({
+      settle: async () => ({
+        success: false,
+        errorReason: "invalid_exact_evm_transaction_failed",
+        transaction: `0x${"ab".repeat(32)}`,
+        network: BASE_SEPOLIA,
+      }),
+    });
+    const d = deps(g);
+    expect((await processTake(d, card, "x", "u")).status).toBe(402);
+    expect(d.ran).toContain("release");
+  });
+
+  it("records the sale even if the facilitator's amount isn't atomic units", async () => {
+    const g = fake({
+      settle: async () => ({
+        success: true,
+        transaction: "0xabc",
+        network: BASE_SEPOLIA,
+        amount: "1.00",
+      }),
+    });
+    const r = await processTake(deps(g), card, "x", "u");
+    expect(r.status).toBe(201);
+    expect(r.status === 201 && r.sale.amount).toBe("1.000000");
   });
 
   it("never says 'try again' when settle errors: the transfer may have gone out", async () => {
@@ -395,6 +471,91 @@ describe("processTake", () => {
       received_at: NOW,
       facilitator: "x402.org",
     });
+  });
+});
+
+describe("classifySettle", () => {
+  const ok = (s: object) =>
+    classifySettle({ ok: true, s: { network: BASE_SEPOLIA, ...s } as never });
+  const thrown = (e: object) =>
+    classifySettle({ ok: false, error: Object.assign(new Error("x"), e) });
+  const hash = `0x${"cd".repeat(32)}`;
+
+  it("only treats proof of no transfer as a refusal", () => {
+    expect(ok({ success: true, transaction: "0xabc" }).kind).toBe("settled");
+    expect(ok({ success: false, transaction: "", errorReason: "insufficient_funds" }).kind).toBe(
+      "refused",
+    );
+    expect(
+      ok({ success: false, transaction: hash, errorReason: "invalid_exact_evm_transaction_failed" })
+        .kind,
+    ).toBe("refused");
+    expect(
+      thrown({ name: "SettleError", statusCode: 400, errorReason: "bad", transaction: "" }).kind,
+    ).toBe("refused");
+  });
+
+  it("treats everything else as unknown, keeping any tx hash", () => {
+    expect(ok({ success: true, transaction: "" })).toMatchObject({ kind: "unknown" });
+    expect(
+      ok({ success: false, transaction: "0xp", errorReason: "settlement_pending" }),
+    ).toMatchObject({ kind: "unknown", tx: "0xp" });
+    expect(ok({ success: false, transaction: hash, errorReason: "transfer_mismatch" }).kind).toBe(
+      "unknown",
+    );
+    expect(
+      ok({ success: false, transaction: "", errorReason: "invalid_exact_evm_nonce_already_used" })
+        .kind,
+    ).toBe("unknown");
+    expect(
+      thrown({
+        name: "SettleError",
+        statusCode: 400,
+        errorReason: "settlement_pending",
+        transaction: "0xq",
+      }),
+    ).toMatchObject({ kind: "unknown", tx: "0xq" });
+    expect(
+      thrown({ name: "SettleError", statusCode: 502, errorReason: "bad", transaction: "" }).kind,
+    ).toBe("unknown");
+    expect(thrown({ name: "FacilitatorTimeoutError" }).kind).toBe("unknown");
+    expect(classifySettle({ ok: false, error: new TypeError("fetch failed") }).kind).toBe(
+      "unknown",
+    );
+  });
+});
+
+describe("paymentDeadline", () => {
+  const p = (payload: unknown) =>
+    paymentDeadline({ x402Version: 2, accepted: req, payload } as never);
+
+  it("reads the field the facilitator will use", () => {
+    expect(p({ authorization: { validBefore: "1790000120" } })).toBe(1_790_000_120);
+    expect(p({ permit2Authorization: { deadline: 1_790_000_120 } })).toBe(1_790_000_120);
+    expect(p({ authorization: { validBefore: "0x6ab0c0f8" } })).toBe(0x6ab0c0f8);
+  });
+
+  it("refuses a payload with both shapes (the facilitator would use Permit2)", () => {
+    expect(
+      p({
+        authorization: { validBefore: "9999999999" },
+        permit2Authorization: { deadline: "1790000010" },
+      }),
+    ).toBeNull();
+  });
+
+  it("clamps 'never expires' values instead of refusing them", () => {
+    expect(p({ authorization: { validBefore: (2n ** 256n - 1n).toString() } })).toBe(
+      Number.MAX_SAFE_INTEGER,
+    );
+  });
+
+  it("refuses junk", () => {
+    for (const v of ["", "1e3", "-5", "0", null, {}]) {
+      expect(p({ authorization: { validBefore: v } }), String(v)).toBeNull();
+    }
+    expect(p({})).toBeNull();
+    expect(p(null)).toBeNull();
   });
 });
 

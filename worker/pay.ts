@@ -31,18 +31,80 @@ export const MIN_SECONDS_BEFORE_CHECKS = 30;
 export const MIN_SECONDS_BEFORE_SETTLE = 15;
 
 /**
- * The signature's deadline in unix seconds: EIP-3009 `validBefore` or Permit2 `deadline`.
- * null if the payload has neither, which is refused rather than waved through.
+ * The signature's deadline in unix seconds: Permit2 `deadline` when the payload is Permit2
+ * (the facilitator picks Permit2 whenever that key exists, so we must read the same one),
+ * otherwise EIP-3009 `validBefore`. null if it has neither, or both, which is refused rather
+ * than waved through. Huge values ("never expires") are clamped, not refused.
  */
 export function paymentDeadline(payload: PaymentPayload): number | null {
-  const p = payload.payload as {
-    authorization?: { validBefore?: unknown };
-    permit2Authorization?: { deadline?: unknown };
-  } | null;
-  const raw = p?.authorization?.validBefore ?? p?.permit2Authorization?.deadline;
-  if (typeof raw !== "string" && typeof raw !== "number") return null;
-  const n = Number(raw);
-  return Number.isSafeInteger(n) && n > 0 ? n : null;
+  const p = payload.payload as Record<string, unknown> | null;
+  if (!p || typeof p !== "object") return null;
+  const permit2 = "permit2Authorization" in p;
+  if (permit2 && "authorization" in p) return null;
+  const raw = permit2
+    ? (p.permit2Authorization as { deadline?: unknown } | null)?.deadline
+    : (p.authorization as { validBefore?: unknown } | null)?.validBefore;
+  const text = typeof raw === "number" ? String(raw) : typeof raw === "string" ? raw.trim() : "";
+  if (!/^(0x[0-9a-f]+|\d+)$/i.test(text)) return null;
+  const n = BigInt(text);
+  if (n <= 0n) return null;
+  return n > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(n);
+}
+
+/** Facilitator reasons meaning the transfer was mined and reverted: no money moved. */
+const REVERTED = new Set(["invalid_exact_evm_transaction_failed", "invalid_transaction_state"]);
+const TX_HASH = /^0x[0-9a-fA-F]{64}$/;
+
+type SettleOutcome =
+  | { kind: "settled"; s: SettleResponse & { transaction: string } }
+  | { kind: "refused"; reason: string }
+  | { kind: "unknown"; tx: string | null; why: string };
+
+/**
+ * What a settle call means for the buyer. Only two shapes prove no money moved: a refusal
+ * with no transaction (returned, or thrown as a 4xx SettleError), and a transaction that was
+ * mined and reverted. Everything else that isn't a success (pending, timeouts, 5xx, network
+ * errors, "success" with no tx, a receipt that doesn't match) may have moved money.
+ */
+export function classifySettle(
+  r: { ok: true; s: SettleResponse } | { ok: false; error: unknown },
+): SettleOutcome {
+  let res: Partial<SettleResponse>;
+  let status = 200;
+  if (r.ok) {
+    res = r.s;
+  } else {
+    const e = r.error as Partial<SettleResponse> & { name?: string; statusCode?: number };
+    if (e?.name !== "SettleError") {
+      return {
+        kind: "unknown",
+        tx: null,
+        why: r.error instanceof Error ? r.error.message : String(r.error),
+      };
+    }
+    res = { success: false, errorReason: e.errorReason, transaction: e.transaction };
+    status = typeof e.statusCode === "number" ? e.statusCode : 500;
+  }
+  const tx = typeof res.transaction === "string" && res.transaction ? res.transaction : null;
+  const reason = res.errorReason ?? "unknown";
+  if (res.success) {
+    return tx
+      ? { kind: "settled", s: { ...(res as SettleResponse), transaction: tx } }
+      : { kind: "unknown", tx: null, why: "success without a transaction" };
+  }
+  // "Nonce already used" means the authorization was spent, possibly by us (for example the
+  // library's retry of a pending settle), so it doesn't prove no money moved.
+  if (reason === "settlement_pending" || /nonce|already_used/.test(reason)) {
+    return { kind: "unknown", tx, why: reason };
+  }
+  if (tx) {
+    return REVERTED.has(reason) && TX_HASH.test(tx)
+      ? { kind: "refused", reason: `${reason} (reverted)` }
+      : { kind: "unknown", tx, why: reason };
+  }
+  return status < 500
+    ? { kind: "refused", reason }
+    : { kind: "unknown", tx: null, why: `${status} ${reason}` };
 }
 
 export interface PayConfig {
@@ -334,27 +396,27 @@ export async function processTake(
     };
   }
 
-  // 6. Settle. Only now does money move. A settle that errors, times out or reports
-  // "pending" may still have broadcast the transfer, so the buyer must not pay again and the
-  // counts stay. Only a plain refusal with no transaction gives the counts back.
-  let s: SettleResponse;
-  try {
-    s = await deps.gateway.settle(payload, req);
-  } catch (e) {
-    return unknownOutcome(null, payer, e instanceof Error ? e.message : String(e));
-  }
-  if (!s.success && s.transaction) {
-    return unknownOutcome(s.transaction, payer, s.errorReason ?? "unknown");
-  }
-  if (!s.success || !s.transaction) {
+  // 6. Settle. Only now does money move. Unless the result proves no money moved (see
+  // classifySettle), the buyer is told not to pay again and the counts stay.
+  const outcome = classifySettle(
+    await deps.gateway.settle(payload, req).then(
+      (s) => ({ ok: true as const, s }),
+      (error: unknown) => ({ ok: false as const, error }),
+    ),
+  );
+  if (outcome.kind === "unknown") return unknownOutcome(outcome.tx, payer, outcome.why);
+  if (outcome.kind === "refused") {
     await deps.releasePaid(payer, card.card, committedAt);
     return {
       status: 402,
-      body: { ...required, error: `settlement failed: ${s.errorReason ?? "unknown"}` },
+      body: { ...required, error: `settlement failed: ${outcome.reason}. ${notCharged}` },
     };
   }
+  const s = outcome.s;
 
-  const amount = usdcFromAtomic(s.amount ?? req.amount);
+  // The facilitator's amount if it is atomic units, else the quoted one: nothing after a
+  // successful settle may throw, or the buyer would be told to try again.
+  const amount = usdcFromAtomic(/^\d+$/.test(s.amount ?? "") ? (s.amount as string) : req.amount);
   const id = deps.newId();
   const sale: Sale = {
     id,
