@@ -76,6 +76,50 @@ async function errorText(res: Response): Promise<string> {
   return body?.errors?.join(". ") ?? body?.error ?? `Request failed (${res.status})`;
 }
 
+type PaidBody = { error?: string; errors?: string[]; tx?: string | null };
+
+export type PaidOutcome =
+  | { kind: "ok"; tx: string }
+  | { kind: "pending"; message: string; tx: string | null }
+  | { kind: "error"; message: string };
+
+/**
+ * What the reply to a signed payment means for the buyer. Once a payment is signed, only an
+ * explicit refusal (a 4xx, or our own 503 saying "You have not been charged") lets them try
+ * again. 202, any other 5xx, and a 201 whose body didn't arrive all mean money may have moved.
+ */
+export function paidOutcome(status: number, body: PaidBody | null): PaidOutcome {
+  const text = body?.errors?.join(". ") ?? body?.error ?? `Request failed (${status})`;
+  const tx = typeof body?.tx === "string" && body.tx ? body.tx : null;
+  if (status === 201) {
+    return tx
+      ? { kind: "ok", tx }
+      : {
+          kind: "pending",
+          message:
+            "Your payment went through, but the page lost the server's reply. Do not pay again. Reload the page to see your card.",
+          tx: null,
+        };
+  }
+  if (status === 202) {
+    return {
+      kind: "pending",
+      message: body?.error ?? "We could not confirm your payment. Do not pay again.",
+      tx,
+    };
+  }
+  if (status >= 500 && !/not been charged/.test(text)) {
+    return {
+      kind: "pending",
+      message: /do not pay again/i.test(text)
+        ? text
+        : `${text}. Do not pay again until you have checked your wallet.`,
+      tx,
+    };
+  }
+  return { kind: "error", message: text };
+}
+
 export async function takeTheBox(
   apiUrl: string,
   card: TakeCardInput,
@@ -155,17 +199,9 @@ export async function takeTheBox(
       null,
     );
   }
-  if (paid.status === 202) {
-    const b = (await paid.json().catch(() => null)) as {
-      error?: string;
-      tx?: string | null;
-    } | null;
-    throw pendingError(
-      b?.error ?? "We could not confirm your payment. Do not pay again.",
-      b?.tx ?? null,
-    );
-  }
-  if (paid.status !== 201) throw new TakeError(await errorText(paid));
-  const result = (await paid.json()) as { tx: string };
-  return { tx: result.tx };
+  const reply = (await paid.json().catch(() => null)) as PaidBody | null;
+  const outcome = paidOutcome(paid.status, reply);
+  if (outcome.kind === "pending") throw pendingError(outcome.message, outcome.tx);
+  if (outcome.kind === "error") throw new TakeError(outcome.message);
+  return { tx: outcome.tx };
 }

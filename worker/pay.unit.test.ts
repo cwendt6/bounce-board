@@ -12,6 +12,7 @@ import {
   type TakeDeps,
   usdcFromAtomic,
   usdValue,
+  WatchedFacilitator,
 } from "./pay";
 
 const PAY_TO = "0x00000000000000000000000000000000000000aa";
@@ -346,7 +347,7 @@ describe("processTake", () => {
     const g = fake({
       settle: async () => ({
         success: false,
-        errorReason: "insufficient_funds",
+        errorReason: "invalid_exact_evm_insufficient_balance",
         transaction: "",
         network: BASE_SEPOLIA,
       }),
@@ -372,10 +373,10 @@ describe("processTake", () => {
   it("gives the quota back for a refusal thrown as a 4xx SettleError with no tx", async () => {
     const g = fake({
       settle: async () => {
-        throw Object.assign(new Error("insufficient_funds"), {
+        throw Object.assign(new Error("invalid_exact_evm_signature"), {
           name: "SettleError",
           statusCode: 400,
-          errorReason: "insufficient_funds",
+          errorReason: "invalid_exact_evm_signature",
           transaction: "",
         });
       },
@@ -386,18 +387,40 @@ describe("processTake", () => {
     expect(d.ran.slice(-2)).toEqual(["commit", "release"]);
   });
 
-  it("gives the quota back for a transfer that was mined and reverted", async () => {
+  it("never says 'not charged' for 'transaction failed', with or without a tx", async () => {
+    // The facilitator uses this reason for a broadcast that errored (which may still mine)
+    // and for a pending tx it couldn't store, as well as for a revert.
+    for (const transaction of [`0x${"ab".repeat(32)}`, ""]) {
+      const g = fake({
+        settle: async () => ({
+          success: false,
+          errorReason: "invalid_exact_evm_transaction_failed",
+          transaction,
+          network: BASE_SEPOLIA,
+        }),
+      });
+      const d = deps(g);
+      expect((await processTake(d, card, "x", "u")).status).toBe(202);
+      expect(d.ran).not.toContain("release");
+    }
+  });
+
+  it("says 'unknown' when an earlier attempt broadcast, even if the last one looks refused", async () => {
+    // The library retries a pending settle once and returns only the second result.
     const g = fake({
       settle: async () => ({
         success: false,
-        errorReason: "invalid_exact_evm_transaction_failed",
-        transaction: `0x${"ab".repeat(32)}`,
+        errorReason: "invalid_exact_evm_payload_authorization_valid_before",
+        transaction: "",
         network: BASE_SEPOLIA,
       }),
+      settleTrace: () => ({ broadcast: true, firstTx: "0xfirst" }),
     });
     const d = deps(g);
-    expect((await processTake(d, card, "x", "u")).status).toBe(402);
-    expect(d.ran).toContain("release");
+    const r = await processTake(d, card, "x", "u");
+    expect(r.status).toBe(202);
+    expect(r.status === 202 && r.body.tx).toBe("0xfirst");
+    expect(d.ran).not.toContain("release");
   });
 
   it("records the sale even if the facilitator's amount isn't atomic units", async () => {
@@ -475,38 +498,50 @@ describe("processTake", () => {
 });
 
 describe("classifySettle", () => {
-  const ok = (s: object) =>
-    classifySettle({ ok: true, s: { network: BASE_SEPOLIA, ...s } as never });
+  const ok = (s: object, trace?: { broadcast: boolean; firstTx: string | null }) =>
+    classifySettle({ ok: true, s: { network: BASE_SEPOLIA, ...s } as never }, trace);
   const thrown = (e: object) =>
     classifySettle({ ok: false, error: Object.assign(new Error("x"), e) });
   const hash = `0x${"cd".repeat(32)}`;
+  const preBroadcast = "invalid_exact_evm_payload_authorization_valid_before";
 
-  it("only treats proof of no transfer as a refusal", () => {
+  it("only treats a pre-broadcast refusal with no tx as proof of no transfer", () => {
     expect(ok({ success: true, transaction: "0xabc" }).kind).toBe("settled");
-    expect(ok({ success: false, transaction: "", errorReason: "insufficient_funds" }).kind).toBe(
-      "refused",
-    );
+    expect(ok({ success: false, transaction: "", errorReason: preBroadcast }).kind).toBe("refused");
     expect(
-      ok({ success: false, transaction: hash, errorReason: "invalid_exact_evm_transaction_failed" })
+      thrown({ name: "SettleError", statusCode: 400, errorReason: preBroadcast, transaction: "" })
         .kind,
-    ).toBe("refused");
-    expect(
-      thrown({ name: "SettleError", statusCode: 400, errorReason: "bad", transaction: "" }).kind,
     ).toBe("refused");
   });
 
-  it("treats everything else as unknown, keeping any tx hash", () => {
-    expect(ok({ success: true, transaction: "" })).toMatchObject({ kind: "unknown" });
+  it("treats everything else as unknown, keeping the first tx hash", () => {
+    for (const s of [
+      { success: true, transaction: "" },
+      { success: false, transaction: "0xp", errorReason: "settlement_pending" },
+      { success: false, transaction: hash, errorReason: "invalid_exact_evm_transaction_failed" },
+      { success: false, transaction: "", errorReason: "invalid_exact_evm_transaction_failed" },
+      { success: false, transaction: "", errorReason: "invalid_exact_evm_nonce_already_used" },
+      {
+        success: false,
+        transaction: hash,
+        errorReason: "invalid_exact_evm_transfer_event_mismatch",
+      },
+      { success: false, transaction: "", errorReason: "erc20_approval_broadcast_failed" },
+      { success: false, transaction: "", errorReason: "some_other_facilitator_reason" },
+      { success: false, transaction: "", errorReason: preBroadcast, extra: 1 },
+    ]) {
+      const trace = "extra" in s ? { broadcast: true, firstTx: "0xfirst" } : undefined;
+      expect(ok(s, trace).kind, JSON.stringify(s)).toBe("unknown");
+    }
     expect(
       ok({ success: false, transaction: "0xp", errorReason: "settlement_pending" }),
-    ).toMatchObject({ kind: "unknown", tx: "0xp" });
-    expect(ok({ success: false, transaction: hash, errorReason: "transfer_mismatch" }).kind).toBe(
-      "unknown",
-    );
+    ).toMatchObject({ tx: "0xp" });
     expect(
-      ok({ success: false, transaction: "", errorReason: "invalid_exact_evm_nonce_already_used" })
-        .kind,
-    ).toBe("unknown");
+      ok(
+        { success: false, transaction: "", errorReason: preBroadcast },
+        { broadcast: true, firstTx: "0xfirst" },
+      ),
+    ).toMatchObject({ kind: "unknown", tx: "0xfirst" });
     expect(
       thrown({
         name: "SettleError",
@@ -516,12 +551,76 @@ describe("classifySettle", () => {
       }),
     ).toMatchObject({ kind: "unknown", tx: "0xq" });
     expect(
-      thrown({ name: "SettleError", statusCode: 502, errorReason: "bad", transaction: "" }).kind,
+      thrown({ name: "SettleError", statusCode: 502, errorReason: preBroadcast, transaction: "" })
+        .kind,
     ).toBe("unknown");
     expect(thrown({ name: "FacilitatorTimeoutError" }).kind).toBe("unknown");
     expect(classifySettle({ ok: false, error: new TypeError("fetch failed") }).kind).toBe(
       "unknown",
     );
+  });
+});
+
+describe("WatchedFacilitator", () => {
+  const payload = { x402Version: 2, accepted: req, payload: { signature: "0xsig" } } as never;
+  const other = { x402Version: 2, accepted: req, payload: { signature: "0xother" } } as never;
+  const inner = (results: (object | Error)[]) => {
+    let i = 0;
+    return {
+      verify: async () => ({ isValid: true }),
+      getSupported: async () => ({ kinds: [], extensions: [], signers: {} }),
+      settle: async () => {
+        const r = results[i++];
+        if (r instanceof Error) throw r;
+        return r;
+      },
+    } as never;
+  };
+
+  it("remembers a pending attempt that the library's retry hides", async () => {
+    const w = new WatchedFacilitator(
+      inner([
+        {
+          success: false,
+          errorReason: "settlement_pending",
+          transaction: "0xtx1",
+          network: BASE_SEPOLIA,
+        },
+        {
+          success: false,
+          errorReason: "invalid_exact_evm_payload_authorization_valid_before",
+          transaction: "",
+          network: BASE_SEPOLIA,
+        },
+      ]),
+    );
+    await w.settle(payload, req);
+    await w.settle(payload, req);
+    expect(w.trace(payload)).toEqual({ broadcast: true, firstTx: "0xtx1" });
+    expect(w.trace(other)).toEqual({ broadcast: false, firstTx: null });
+  });
+
+  it("records a tx carried by a thrown SettleError, and nothing for a plain refusal", async () => {
+    const err = Object.assign(new Error("settlement_pending"), {
+      name: "SettleError",
+      errorReason: "settlement_pending",
+      transaction: "0xtx2",
+    });
+    const w = new WatchedFacilitator(
+      inner([
+        err,
+        {
+          success: false,
+          errorReason: "invalid_exact_evm_signature",
+          transaction: "",
+          network: BASE_SEPOLIA,
+        },
+      ]),
+    );
+    await expect(w.settle(payload, req)).rejects.toThrow();
+    expect(w.trace(payload)).toEqual({ broadcast: true, firstTx: "0xtx2" });
+    await w.settle(other, req);
+    expect(w.trace(other)).toEqual({ broadcast: false, firstTx: null });
   });
 });
 

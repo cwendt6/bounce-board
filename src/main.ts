@@ -516,15 +516,25 @@ function setupTakeDialog() {
   const note = document.querySelector(".queue .fine");
   if (note) note.textContent = "Payments: USDC on Base Sepolia (testnet).";
 
+  /** Set once a signed payment may still settle; the page must be reloaded to pay again. */
+  let pendingPayment = false;
+  /** The "do not pay again" warning. Once set, nothing else may replace it. */
+  let pendingNotice: (string | Node)[] | null = null;
+
   const say = (msg: string, error = false) => {
+    if (pendingNotice) {
+      status.replaceChildren(
+        ...pendingNotice.map((n) => (typeof n === "string" ? n : n.cloneNode(true))),
+      );
+      status.classList.add("error");
+      return;
+    }
     status.replaceChildren(msg);
     status.classList.toggle("error", error);
   };
 
   // Logo: prepared (cropped and re-encoded) as soon as it's picked, so errors show early.
   let logoData: string | null = null;
-  /** Set once a signed payment may still settle; the page must be reloaded to pay again. */
-  let pendingPayment = false;
   const preview = $("logo-preview") as HTMLImageElement;
   const fileInput = form.elements.namedItem("logo") as HTMLInputElement;
   fileInput.addEventListener("change", async () => {
@@ -589,7 +599,7 @@ function setupTakeDialog() {
       if (pending.pending) {
         // A payment may be in flight. Keep the button off so nobody signs a second one.
         pendingPayment = true;
-        status.replaceChildren(
+        pendingNotice = [
           `${pending.message ?? "Your payment may still go through. Do not pay again."} Reload the page once you have checked your wallet.`,
           ...(pending.tx
             ? [
@@ -605,8 +615,8 @@ function setupTakeDialog() {
                 ),
               ]
             : []),
-        );
-        status.classList.add("error");
+        ];
+        say("");
         return;
       }
       const code = (err as { code?: number }).code;

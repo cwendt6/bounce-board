@@ -51,23 +51,75 @@ export function paymentDeadline(payload: PaymentPayload): number | null {
   return n > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(n);
 }
 
-/** Facilitator reasons meaning the transfer was mined and reverted: no money moved. */
-const REVERTED = new Set(["invalid_exact_evm_transaction_failed", "invalid_transaction_state"]);
-const TX_HASH = /^0x[0-9a-fA-F]{64}$/;
+/**
+ * Facilitator refusals from checks that run before anything is broadcast (@x402/evm 2.28
+ * exact scheme: signature, amount, recipient, time window, balance, simulation). Only these
+ * prove no money moved. Anything else, including "transaction failed" (the facilitator's
+ * catch-all for a broadcast that errored, which may still mine) and reasons from other
+ * facilitators we don't know, is treated as "may have moved money".
+ */
+export const PRE_BROADCAST_REASONS = new Set([
+  "invalid_exact_evm_payload_authorization_value_mismatch",
+  "invalid_exact_evm_payload_authorization_valid_after",
+  "invalid_exact_evm_payload_authorization_valid_before",
+  "invalid_exact_evm_insufficient_balance",
+  "invalid_exact_evm_eip3009_not_supported",
+  "invalid_exact_evm_transaction_simulation_failed",
+  "invalid_exact_evm_token_name_mismatch",
+  "invalid_exact_evm_token_version_mismatch",
+  "invalid_exact_evm_failed_to_parse_signature",
+  "invalid_exact_evm_authorization_value",
+  "invalid_exact_evm_scheme",
+  "invalid_exact_evm_signature",
+  "invalid_exact_evm_missing_eip712_domain",
+  "invalid_exact_evm_network_mismatch",
+  "invalid_exact_evm_recipient_mismatch",
+  "asset_not_deployed_contract",
+  "unsupported_payload_type",
+  "unsupported_asset_transfer_method",
+  "unsupported_payment_flow",
+  "permit2_amount_mismatch",
+  "permit2_deadline_expired",
+  "permit2_insufficient_balance",
+  "permit2_invalid_amount",
+  "permit2_invalid_destination",
+  "permit2_invalid_owner",
+  "invalid_permit2_signature",
+  "invalid_permit2_spender",
+  "permit2_not_yet_valid",
+  "permit2_payment_too_early",
+  "permit2_proxy_not_deployed",
+  "invalid_permit2_recipient_mismatch",
+  "permit2_simulation_failed",
+  "permit2_token_mismatch",
+  "permit2_allowance_required",
+]);
 
 type SettleOutcome =
   | { kind: "settled"; s: SettleResponse & { transaction: string } }
   | { kind: "refused"; reason: string }
   | { kind: "unknown"; tx: string | null; why: string };
 
+/** What happened across every settle attempt in one call (the library may retry once). */
+export interface SettleTrace {
+  /** Some attempt reported a transaction or "settlement_pending": a transfer may be out. */
+  broadcast: boolean;
+  /** The first transaction hash any attempt reported. */
+  firstTx: string | null;
+}
+
+export const NO_BROADCAST: SettleTrace = { broadcast: false, firstTx: null };
+
 /**
- * What a settle call means for the buyer. Only two shapes prove no money moved: a refusal
- * with no transaction (returned, or thrown as a 4xx SettleError), and a transaction that was
- * mined and reverted. Everything else that isn't a success (pending, timeouts, 5xx, network
- * errors, "success" with no tx, a receipt that doesn't match) may have moved money.
+ * What a settle call means for the buyer. It is "refused" (not charged) only when no attempt
+ * saw a broadcast and the final answer is a pre-broadcast refusal with no transaction
+ * (returned, or thrown as a 4xx SettleError). It is "settled" only on success with a tx.
+ * Everything else may have moved money: pending, timeouts, 5xx, network errors, "nonce
+ * already used", "transaction failed", success with no tx, unknown reasons.
  */
 export function classifySettle(
   r: { ok: true; s: SettleResponse } | { ok: false; error: unknown },
+  trace: SettleTrace = NO_BROADCAST,
 ): SettleOutcome {
   let res: Partial<SettleResponse>;
   let status = 200;
@@ -78,7 +130,7 @@ export function classifySettle(
     if (e?.name !== "SettleError") {
       return {
         kind: "unknown",
-        tx: null,
+        tx: trace.firstTx,
         why: r.error instanceof Error ? r.error.message : String(r.error),
       };
     }
@@ -90,21 +142,78 @@ export function classifySettle(
   if (res.success) {
     return tx
       ? { kind: "settled", s: { ...(res as SettleResponse), transaction: tx } }
-      : { kind: "unknown", tx: null, why: "success without a transaction" };
+      : { kind: "unknown", tx: trace.firstTx, why: "success without a transaction" };
   }
-  // "Nonce already used" means the authorization was spent, possibly by us (for example the
-  // library's retry of a pending settle), so it doesn't prove no money moved.
-  if (reason === "settlement_pending" || /nonce|already_used/.test(reason)) {
-    return { kind: "unknown", tx, why: reason };
-  }
-  if (tx) {
-    return REVERTED.has(reason) && TX_HASH.test(tx)
-      ? { kind: "refused", reason: `${reason} (reverted)` }
-      : { kind: "unknown", tx, why: reason };
-  }
-  return status < 500
+  const provenNoTransfer =
+    !trace.broadcast && !tx && status < 500 && PRE_BROADCAST_REASONS.has(reason);
+  return provenNoTransfer
     ? { kind: "refused", reason }
-    : { kind: "unknown", tx: null, why: `${status} ${reason}` };
+    : {
+        kind: "unknown",
+        tx: trace.firstTx ?? tx,
+        why: status === 200 ? reason : `${status} ${reason}`,
+      };
+}
+
+const signatureKey = (p: PaymentPayload) => {
+  const sig = (p.payload as { signature?: unknown } | null)?.signature;
+  return typeof sig === "string" ? sig : JSON.stringify(p.payload);
+};
+
+/**
+ * Wraps the facilitator client so we see every settle attempt, including the one the library
+ * repeats after "settlement_pending" (it hands back only the second result, which on another
+ * facilitator replica can look like a plain refusal even though the first transfer is out).
+ * Traces are keyed by signature and kept for 10 minutes, so concurrent requests carrying the
+ * same signature also see each other's broadcasts.
+ */
+export class WatchedFacilitator {
+  private traces = new Map<string, SettleTrace & { at: number }>();
+
+  constructor(private readonly inner: HTTPFacilitatorClient) {}
+
+  verify(p: PaymentPayload, r: PaymentRequirements) {
+    return this.inner.verify(p, r);
+  }
+
+  getSupported() {
+    return this.inner.getSupported();
+  }
+
+  async settle(p: PaymentPayload, r: PaymentRequirements): Promise<SettleResponse> {
+    try {
+      const res = await this.inner.settle(p, r);
+      this.note(p, res.transaction, res.errorReason);
+      return res;
+    } catch (e) {
+      const se = e as { transaction?: unknown; errorReason?: unknown };
+      this.note(
+        p,
+        typeof se?.transaction === "string" ? se.transaction : "",
+        typeof se?.errorReason === "string" ? se.errorReason : undefined,
+      );
+      throw e;
+    }
+  }
+
+  private note(p: PaymentPayload, tx: string | undefined, reason: string | undefined) {
+    if (!tx && reason !== "settlement_pending") return;
+    const key = signatureKey(p);
+    const prev = this.traces.get(key);
+    this.traces.set(key, {
+      broadcast: true,
+      firstTx: prev?.firstTx ?? (tx || null),
+      at: prev?.at ?? Date.now(),
+    });
+  }
+
+  /** What every attempt for this payload's signature has seen so far. */
+  trace(p: PaymentPayload): SettleTrace {
+    const now = Date.now();
+    for (const [k, v] of this.traces) if (now - v.at > 10 * 60_000) this.traces.delete(k);
+    const t = this.traces.get(signatureKey(p));
+    return t ? { broadcast: t.broadcast, firstTx: t.firstTx } : NO_BROADCAST;
+  }
 }
 
 export interface PayConfig {
@@ -138,18 +247,25 @@ export interface Gateway {
     req: PaymentRequirements,
   ): Promise<{ ok: boolean; reason?: string; payer?: string }>;
   settle(payload: PaymentPayload, req: PaymentRequirements): Promise<SettleResponse>;
+  /** Whether any settle attempt for this payload saw a broadcast (see WatchedFacilitator). */
+  settleTrace?(payload: PaymentPayload): SettleTrace;
 }
 
 export class X402Gateway implements Gateway {
   private server: x402ResourceServer;
+  private facilitator: WatchedFacilitator;
   private ready: Promise<void> | null = null;
 
   constructor(private readonly cfg: PayConfig) {
     // 30 s per facilitator call instead of the library's 90 s, so a slow facilitator can't
     // outlast the buyer's 120 s signature.
-    this.server = new x402ResourceServer(
+    this.facilitator = new WatchedFacilitator(
       new HTTPFacilitatorClient({ url: cfg.facilitatorUrl, timeoutMs: FACILITATOR_TIMEOUT_MS }),
-    ).register(cfg.network as `${string}:${string}`, new ExactEvmScheme());
+    );
+    this.server = new x402ResourceServer(this.facilitator).register(
+      cfg.network as `${string}:${string}`,
+      new ExactEvmScheme(),
+    );
   }
 
   private init(): Promise<void> {
@@ -186,6 +302,10 @@ export class X402Gateway implements Gateway {
   async settle(payload: PaymentPayload, req: PaymentRequirements) {
     await this.init();
     return this.server.settlePayment(payload, req);
+  }
+
+  settleTrace(payload: PaymentPayload): SettleTrace {
+    return this.facilitator.trace(payload);
   }
 }
 
@@ -398,12 +518,11 @@ export async function processTake(
 
   // 6. Settle. Only now does money move. Unless the result proves no money moved (see
   // classifySettle), the buyer is told not to pay again and the counts stay.
-  const outcome = classifySettle(
-    await deps.gateway.settle(payload, req).then(
-      (s) => ({ ok: true as const, s }),
-      (error: unknown) => ({ ok: false as const, error }),
-    ),
+  const result = await deps.gateway.settle(payload, req).then(
+    (s) => ({ ok: true as const, s }),
+    (error: unknown) => ({ ok: false as const, error }),
   );
+  const outcome = classifySettle(result, deps.gateway.settleTrace?.(payload) ?? NO_BROADCAST);
   if (outcome.kind === "unknown") return unknownOutcome(outcome.tx, payer, outcome.why);
   if (outcome.kind === "refused") {
     await deps.releasePaid(payer, card.card, committedAt);

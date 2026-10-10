@@ -311,7 +311,11 @@ app.post("/api/take", async (c) => {
   } catch (e) {
     console.error("SETTLED BUT NOT QUEUED", result.sale.tx_hash, e);
     return c.json(
-      { error: "payment received but the takeover was not queued", tx: result.sale.tx_hash },
+      {
+        error:
+          "Your payment went through, but your card was not queued. Do not pay again. Contact us with the transaction hash and we will queue it or refund you.",
+        tx: result.sale.tx_hash,
+      },
       500,
     );
   }
