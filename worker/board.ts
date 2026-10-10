@@ -133,6 +133,8 @@ export class Board extends DurableObject<Env> {
     }
     if (!cols.has("removed_reason"))
       this.sql.exec("ALTER TABLE takeovers ADD COLUMN removed_reason TEXT");
+    if (!cols.has("restored_from"))
+      this.sql.exec("ALTER TABLE takeovers ADD COLUMN restored_from TEXT");
   }
 
   // ---------- state ----------
@@ -396,13 +398,27 @@ export class Board extends DurableObject<Env> {
 
   /**
    * Kill switch: remove the current holder now. The next queued buyer takes over immediately;
-   * with an empty queue, the previous holder's card comes back (marked restored, not counted).
+   * with an empty queue, the previous genuine holder's card comes back (marked restored, not
+   * counted). `expectedId` guards against stale clicks: if the board has moved on, nothing
+   * happens. Killing a restored holder also removes the reign it was restored from, so the same
+   * content can't come straight back. Removed listings' logos are deleted.
    */
-  async kill(reason: string): Promise<Snapshot> {
+  async kill(
+    reason: string,
+    expectedId?: string,
+  ): Promise<{ killed: boolean; snapshot: Snapshot }> {
     const now = Date.now();
     const cur = this.load().current;
-    if (!cur) return this.snapshot();
+    if (!cur || (expectedId !== undefined && cur.id !== expectedId)) {
+      return { killed: false, snapshot: this.snapshot() };
+    }
     this.ctx.storage.transactionSync(() => {
+      const row = this.sql
+        .exec<{ restored: number; restored_from: string | null }>(
+          "SELECT restored, restored_from FROM takeovers WHERE id = ?",
+          cur.id,
+        )
+        .toArray()[0];
       const corners = cornerHits(initialPhase(cur.seed), 0, (now - cur.startMs) / 1000).length;
       this.sql.exec(
         `UPDATE takeovers SET status = 'finished', end_ms = ?, corners = ?, removed = 1, removed_reason = ?
@@ -412,6 +428,15 @@ export class Board extends DurableObject<Env> {
         reason,
         cur.id,
       );
+      this.sql.exec("DELETE FROM logos WHERE takeover_id = ?", cur.id);
+      if (row?.restored === 1 && row.restored_from) {
+        this.sql.exec(
+          "UPDATE takeovers SET removed = 1, removed_reason = ? WHERE id = ?",
+          reason,
+          row.restored_from,
+        );
+        this.sql.exec("DELETE FROM logos WHERE takeover_id = ?", row.restored_from);
+      }
       const next = this.rows("queued")[0];
       if (next) {
         this.sql.exec(
@@ -423,8 +448,9 @@ export class Board extends DurableObject<Env> {
         return;
       }
       const prev = this.sql
-        .exec<{ card: string }>(
-          `SELECT card FROM takeovers WHERE status = 'finished' AND removed = 0 AND id != ?
+        .exec<{ id: string; card: string }>(
+          `SELECT id, card FROM takeovers
+            WHERE status = 'finished' AND removed = 0 AND restored = 0 AND id != ?
             ORDER BY end_ms DESC LIMIT 1`,
           cur.id,
         )
@@ -432,33 +458,40 @@ export class Board extends DurableObject<Env> {
       if (prev) {
         const id = crypto.randomUUID();
         this.sql.exec(
-          `INSERT INTO takeovers (id, status, paid_at, start_ms, seed, card, restored)
-           VALUES (?, 'current', ?, ?, ?, ?, 1)`,
+          `INSERT INTO takeovers (id, status, paid_at, start_ms, seed, card, restored, restored_from)
+           VALUES (?, 'current', ?, ?, ?, ?, 1, ?)`,
           id,
           now,
           now,
           seedFor(id),
           prev.card,
+          prev.id,
         );
       }
     });
     await this.step();
-    return this.snapshot();
+    return { killed: true, snapshot: this.snapshot() };
   }
 
   /** Remove a takeover: the current one (same as kill) or a queued one. */
   async remove(id: string, reason: string): Promise<{ removed: boolean; snapshot: Snapshot }> {
-    const cur = this.load().current;
-    if (cur?.id === id) return { removed: true, snapshot: await this.kill(reason) };
+    if (this.load().current?.id === id) {
+      const r = await this.kill(reason, id);
+      return { removed: r.killed, snapshot: r.snapshot };
+    }
     const now = Date.now();
-    const changed = this.sql.exec(
-      `UPDATE takeovers SET status = 'finished', start_ms = ?, end_ms = ?, corners = 0, removed = 1,
-              removed_reason = ? WHERE id = ? AND status = 'queued'`,
-      now,
-      now,
-      reason,
-      id,
-    ).rowsWritten;
+    let changed = 0;
+    this.ctx.storage.transactionSync(() => {
+      changed = this.sql.exec(
+        `UPDATE takeovers SET status = 'finished', start_ms = ?, end_ms = ?, corners = 0, removed = 1,
+                removed_reason = ? WHERE id = ? AND status = 'queued'`,
+        now,
+        now,
+        reason,
+        id,
+      ).rowsWritten;
+      if (changed > 0) this.sql.exec("DELETE FROM logos WHERE takeover_id = ?", id);
+    });
     await this.step();
     return { removed: changed > 0, snapshot: this.snapshot() };
   }

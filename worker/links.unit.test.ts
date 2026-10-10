@@ -5,6 +5,7 @@ import {
   domainChain,
   levenshtein,
   type PhishingLookup,
+  registrableDomain,
 } from "./links";
 
 const list: PhishingLookup = {
@@ -57,5 +58,88 @@ describe("link checks", () => {
     expect(checkDescription("Claim at https://example.com").ok).toBe(false);
     expect(checkDescription("connect at www.example.com").ok).toBe(false);
     expect(checkDescription("visit claim-airdrop.xyz now").ok).toBe(false);
+  });
+  it("catches look-alikes hidden in subdomains, trailing dots and other TLDs", () => {
+    expect(checkLink("https://login.metamsk.io/", list).ok).toBe(false);
+    expect(checkLink("https://metamsk.io./", list).ok).toBe(false);
+    expect(checkLink("https://metamask.app/", list).ok).toBe(false);
+    expect(checkLink("https://www.metamask.io/", list)).toEqual({ ok: true });
+    expect(checkLink("https://docs.example.com/", list)).toEqual({ ok: true });
+  });
+
+  it("reduces hosts to their registrable domain", () => {
+    expect(registrableDomain("a.b.metamsk.io.")).toBe("metamsk.io");
+    expect(registrableDomain("example.com")).toBe("example.com");
+  });
+  it("treats shared hosting as a public suffix, so the attacker's label is checked", () => {
+    expect(checkLink("https://metamask.pages.dev/", list).ok).toBe(false);
+    expect(checkLink("https://metamsk.vercel.app/", list).ok).toBe(false);
+    expect(checkLink("https://coffee-shop.pages.dev/", list)).toEqual({ ok: true });
+    expect(registrableDomain("a.metamask.github.io")).toBe("metamask.github.io");
+
+    for (const url of [
+      "https://metamask.deno.dev/",
+      "https://metamask.up.railway.app/",
+      "https://metamask.s3.amazonaws.com/",
+      "https://metamask.eth.limo/",
+      "https://metamask.co.in/",
+    ]) {
+      expect(checkLink(url, list).ok, url).toBe(false);
+    }
+    expect(registrableDomain("x.metamask.up.railway.app")).toBe("metamask.up.railway.app");
+  });
+
+  it("blocks the exact brand as a subdomain label on shared hosts only", () => {
+    expect(checkLink("https://metamask.evil.workers.dev/", list).ok).toBe(false);
+    expect(checkLink("https://metamask.proj.pages.dev/", list).ok).toBe(false);
+    expect(checkLink("https://metamask.s3.us-east-1.amazonaws.com/", list).ok).toBe(false);
+    // A normal domain's subdomains are its owner's (ethereum.stackexchange.com).
+    expect(checkLink("https://opensea.example.com/", list)).toEqual({ ok: true });
+    expect(checkLink("https://app.example.com/", list)).toEqual({ ok: true });
+  });
+
+  it("caps the tolerance at 1 and needs an exact match for short brand labels", () => {
+    const loose: PhishingLookup = {
+      ...list,
+      isWhitelisted: () => false,
+      fuzzylist: () => ({ entries: ["uniswap.org", "dydx.exchange"], tolerance: 2 }),
+    };
+    // dydy is one edit from dydx: allowed, because short brand labels need an exact match.
+    for (const ok of [
+      "https://unisat.io/",
+      "https://dx.com/",
+      "https://dyn.com/",
+      "https://dydy.com/",
+    ]) {
+      expect(checkLink(ok, loose), ok).toEqual({ ok: true });
+    }
+    expect(checkLink("https://unisvap.org/", loose).ok).toBe(false);
+    expect(checkLink("https://dydx.app/", loose).ok).toBe(false);
+  });
+
+  it("allows official alternate domains of protected brands", () => {
+    expect(checkLink("https://metamask.github.io/test-dapp/", list)).toEqual({ ok: true });
+    const eth: PhishingLookup = {
+      ...list,
+      fuzzylist: () => ({ entries: ["launchpad.ethereum.org"], tolerance: 1 }),
+    };
+    expect(checkLink("https://ethereum.github.io/", eth)).toEqual({ ok: true });
+    expect(checkLink("https://ethereum.stackexchange.com/", eth)).toEqual({ ok: true });
+  });
+
+  it("refuses single-label hosts, including ones with a trailing dot", () => {
+    expect(checkLink("https://localhost./", list).ok).toBe(false);
+    expect(checkLink("https://router/", null).ok).toBe(false);
+  });
+
+  it("does not block a brand whose fuzzylist entry has a subdomain", () => {
+    const withSub: PhishingLookup = {
+      ...list,
+      isWhitelisted: () => false,
+      fuzzylist: () => ({ entries: ["app.uniswap.org"], tolerance: 1 }),
+    };
+    expect(checkLink("https://app.uniswap.org/swap", withSub)).toEqual({ ok: true });
+    expect(checkLink("https://uniswap.org/", withSub)).toEqual({ ok: true });
+    expect(checkLink("https://unisvap.org/", withSub).ok).toBe(false);
   });
 });

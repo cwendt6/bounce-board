@@ -4,12 +4,16 @@
  * magic bytes and enforces the size cap. SVG is never accepted, because SVGs can carry scripts.
  */
 export const MAX_LOGO_BYTES = 500 * 1024;
+/** The page sends 256x256; anything above this is refused (huge canvases can crash viewers). */
+export const MAX_LOGO_SIDE = 512;
 
 export type LogoMime = "image/png" | "image/jpeg" | "image/webp";
 
 export interface Logo {
   mime: LogoMime;
   bytes: Uint8Array;
+  width: number;
+  height: number;
 }
 
 const DATA_URL = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]+={0,2})$/;
@@ -28,6 +32,65 @@ export function sniff(b: Uint8Array): LogoMime | null {
   return null;
 }
 
+const u16be = (b: Uint8Array, i: number) => (b[i] << 8) | b[i + 1];
+const u24le = (b: Uint8Array, i: number) => b[i] | (b[i + 1] << 8) | (b[i + 2] << 16);
+
+/** Pixel size from the file header (PNG IHDR, JPEG SOFn, WebP VP8/VP8L/VP8X), or null. */
+export function dimensions(
+  b: Uint8Array,
+  mime: LogoMime,
+): { width: number; height: number } | null {
+  if (mime === "image/png") {
+    if (b.length < 24 || String.fromCharCode(...b.subarray(12, 16)) !== "IHDR") return null;
+    const view = new DataView(b.buffer, b.byteOffset, b.byteLength);
+    return { width: view.getUint32(16), height: view.getUint32(20) };
+  }
+  if (mime === "image/jpeg") {
+    // Walk every header segment up to the image data (SOS) and require exactly one frame
+    // header (SOF). Decoders differ on which of several SOFs they use (libjpeg-turbo refuses
+    // a second one, Apple ImageIO renders the last), so a small first SOF could hide a huge
+    // image from this check.
+    let i = 2;
+    let frame: { width: number; height: number } | null = null;
+    while (i + 3 < b.length) {
+      if (b[i] !== 0xff) return null;
+      // Skip 0xFF fill bytes before a marker, as decoders do (otherwise a crafted file could
+      // hide its real frame size from this scan).
+      while (b[i + 1] === 0xff && i + 4 < b.length) i++;
+      const marker = b[i + 1];
+      if (marker === 0x00 || marker === 0xd9) return null; // stuffed byte, or EOI before SOS
+      if (marker === 0xda) return frame; // start of scan: the headers are done
+      if (marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) {
+        i += 2;
+        continue;
+      }
+      const len = u16be(b, i + 2);
+      if (len < 2) return null;
+      const isSof = marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker);
+      if (isSof) {
+        if (frame || i + 8 >= b.length) return null;
+        frame = { height: u16be(b, i + 5), width: u16be(b, i + 7) };
+      }
+      i += 2 + len;
+    }
+    return null;
+  }
+  // WebP: RIFF....WEBP then one of VP8X / VP8L / "VP8 ".
+  const chunk = String.fromCharCode(...b.subarray(12, 16));
+  if (chunk === "VP8X" && b.length >= 30) {
+    return { width: u24le(b, 24) + 1, height: u24le(b, 27) + 1 };
+  }
+  if (chunk === "VP8L" && b.length >= 25 && b[20] === 0x2f) {
+    const bits = b[21] | (b[22] << 8) | (b[23] << 16) | (b[24] << 24);
+    return { width: (bits & 0x3fff) + 1, height: ((bits >>> 14) & 0x3fff) + 1 };
+  }
+  if (chunk === "VP8 " && b.length >= 30 && b[23] === 0x9d && b[24] === 0x01 && b[25] === 0x2a) {
+    // Lossy VP8: 14-bit little-endian width and height right after the start code.
+    return { width: (b[26] | (b[27] << 8)) & 0x3fff, height: (b[28] | (b[29] << 8)) & 0x3fff };
+  }
+  return null;
+}
+
 export type LogoResult = { ok: true; logo: Logo | null } | { ok: false; error: string };
 
 /** Absent or empty means no logo. Anything else must be a valid PNG, JPEG or WebP data URL. */
@@ -40,15 +103,21 @@ export function parseLogo(input: unknown): LogoResult {
   }
   const m = DATA_URL.exec(input);
   if (!m) return { ok: false, error: "logo: PNG, JPG or WebP only" };
-  let bytes: Uint8Array;
-  try {
-    bytes = Uint8Array.from(atob(m[2]), (c) => c.charCodeAt(0));
-  } catch {
-    return { ok: false, error: "logo: unreadable image data" };
-  }
+  // Buffer's native base64 decoder (nodejs_compat) is ~100x faster than atob + a JS loop,
+  // which matters under the free plan's 10 ms CPU limit per request.
+  const bytes = new Uint8Array(Buffer.from(m[2], "base64"));
+  if (bytes.length === 0) return { ok: false, error: "logo: unreadable image data" };
   if (bytes.length > MAX_LOGO_BYTES) return { ok: false, error: "logo: at most 500 KB" };
   const actual = sniff(bytes);
-  if (!actual || actual !== m[1])
+  if (!actual || actual !== m[1]) {
     return { ok: false, error: "logo: file is not the image type it claims" };
-  return { ok: true, logo: { mime: actual, bytes } };
+  }
+  const dims = dimensions(bytes, actual);
+  if (!dims || dims.width < 1 || dims.height < 1) {
+    return { ok: false, error: "logo: unreadable image size" };
+  }
+  if (dims.width > MAX_LOGO_SIDE || dims.height > MAX_LOGO_SIDE) {
+    return { ok: false, error: `logo: at most ${MAX_LOGO_SIDE}x${MAX_LOGO_SIDE} pixels` };
+  }
+  return { ok: true, logo: { mime: actual, bytes, ...dims } };
 }

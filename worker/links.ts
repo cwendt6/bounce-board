@@ -35,6 +35,93 @@ export function domainChain(host: string): string[] {
   return out;
 }
 
+/**
+ * Shared hosting where anyone can get a subdomain. These act as public suffixes, so for
+ * metamask.pages.dev the part an attacker controls ("metamask") is what gets checked.
+ */
+export const HOSTING_SUFFIXES = new Set([
+  "pages.dev",
+  "workers.dev",
+  "vercel.app",
+  "netlify.app",
+  "github.io",
+  "gitlab.io",
+  "web.app",
+  "firebaseapp.com",
+  "herokuapp.com",
+  "onrender.com",
+  "fly.dev",
+  "glitch.me",
+  "replit.app",
+  "surge.sh",
+  "azurewebsites.net",
+  "blogspot.com",
+  "wixsite.com",
+  "weebly.com",
+  "webflow.io",
+  "framer.website",
+  "ipfs.io",
+  "deno.dev",
+  "duckdns.org",
+  "neocities.org",
+  "wordpress.com",
+  "notion.site",
+  "gitbook.io",
+  "bitbucket.io",
+  "loca.lt",
+  "appspot.com",
+  "netlify.com",
+  "railway.app",
+  "up.railway.app",
+  "s3.amazonaws.com",
+  "amazonaws.com",
+  "cloudfront.net",
+  "azurestaticapps.net",
+  "ngrok.io",
+  "ngrok-free.app",
+  "trycloudflare.com",
+  "myshopify.com",
+  "carrd.co",
+  "square.site",
+  "godaddysites.com",
+  "000webhostapp.com",
+  "pythonanywhere.com",
+  "repl.co",
+  "eth.limo",
+  "eth.link",
+  "co.uk",
+  "org.uk",
+  "com.au",
+  "net.au",
+  "co.jp",
+  "com.br",
+  "co.in",
+  "com.mx",
+  "co.kr",
+  "co.nz",
+  "co.za",
+  "com.sg",
+  "com.tr",
+  "com.ar",
+  "com.cn",
+  "com.hk",
+]);
+
+/**
+ * The registrable domain: the longest known shared suffix (see HOSTING_SUFFIXES) plus one
+ * label, or the last two labels. Good enough for brand look-alike checks. This is a short
+ * hand-picked list, not the full Public Suffix List; the exact blocklist still applies.
+ */
+export function registrableDomain(host: string): string {
+  const parts = host.toLowerCase().replace(/\.+$/, "").split(".");
+  for (const n of [3, 2]) {
+    if (parts.length > n && HOSTING_SUFFIXES.has(parts.slice(-n).join("."))) {
+      return parts.slice(-(n + 1)).join(".");
+    }
+  }
+  return parts.slice(-2).join(".");
+}
+
 export function levenshtein(a: string, b: string, max = Number.POSITIVE_INFINITY): number {
   if (Math.abs(a.length - b.length) > max) return max + 1;
   let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
@@ -53,15 +140,23 @@ export function levenshtein(a: string, b: string, max = Number.POSITIVE_INFINITY
 
 const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
 
+/** Official domains of fuzzylist brands that the label rule below would otherwise block. */
+export const OFFICIAL_ALTERNATES = new Set([
+  "metamask.github.io",
+  "ethereum.github.io",
+  "ethereum.foundation",
+]);
+
 export function checkLink(link: string, list: PhishingLookup | null): LinkCheck {
   let host: string;
   try {
-    host = new URL(link).hostname.toLowerCase();
+    host = new URL(link).hostname.toLowerCase().replace(/\.+$/, "");
   } catch {
     return { ok: false, reason: "link: not a valid URL" };
   }
   if (IPV4.test(host) || host.startsWith("["))
     return { ok: false, reason: "link: IP addresses are not allowed" };
+  if (!host.includes(".")) return { ok: false, reason: "link: needs a full domain name" };
   if (host.split(".").some((label) => label.startsWith("xn--"))) {
     return { ok: false, reason: "link: look-alike (punycode) domains are not allowed" };
   }
@@ -70,10 +165,26 @@ export function checkLink(link: string, list: PhishingLookup | null): LinkCheck 
   if (list.isWhitelisted(chain)) return { ok: true };
   if (list.isBlacklisted(chain))
     return { ok: false, reason: "link: this domain is on a phishing blocklist" };
-  const bare = host.replace(/^www\./, "");
+  // Look-alikes: compare the registrable domain's main label (login.metamsk.io -> "metamsk")
+  // with each protected brand minus its TLD ("metamask"). Distance 0 counts too, so
+  // metamask.app is caught; the brand's own domain (and anything whitelisted) is allowed.
+  // On shared hosting, subdomain labels must not be the brand exactly either
+  // (metamask.evil.workers.dev). Elsewhere subdomains belong to the domain's owner, and
+  // names like ethereum.stackexchange.com are normal.
+  const registrable = registrableDomain(host);
+  if (OFFICIAL_ALTERNATES.has(registrable)) return { ok: true };
+  const label = registrable.split(".")[0];
+  const shared = HOSTING_SUFFIXES.has(registrable.slice(label.length + 1));
+  const subLabels = shared ? host.slice(0, -registrable.length).split(".").filter(Boolean) : [];
   const { entries, tolerance } = list.fuzzylist();
   for (const brand of entries) {
-    if (bare !== brand && levenshtein(bare, brand, tolerance) <= tolerance) {
+    const brandDomain = registrableDomain(brand);
+    if (registrable === brandDomain) continue;
+    const brandLabel = brandDomain.split(".")[0];
+    // MetaMask measures distance on more of the name; we compare one label, so the list's
+    // tolerance is capped at 1, and short brand labels (dydx) must match exactly.
+    const tol = brandLabel.length < 6 ? 0 : Math.min(tolerance, 1);
+    if (levenshtein(label, brandLabel, tol) <= tol || subLabels.includes(brandLabel)) {
       return { ok: false, reason: `link: looks like an imitation of ${brand}` };
     }
   }

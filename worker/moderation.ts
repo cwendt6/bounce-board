@@ -8,11 +8,12 @@
  * the buyer is asked to try again later, before paying.
  */
 import type { BoardCard } from "./card";
+import type { Logo } from "./logo";
 
 export type Verdict = { ok: true } | { ok: false; reason: string } | { ok: "unavailable" };
 
 export interface Moderator {
-  check(card: BoardCard, logoDataUrl: string | null): Promise<Verdict>;
+  check(card: BoardCard, logo: Logo | null): Promise<Verdict>;
 }
 
 /** Llama Guard 3 hazard categories (MLCommons taxonomy). */
@@ -82,6 +83,18 @@ export function parseImageAnswer(text: unknown): Verdict {
   return { ok: "unavailable" };
 }
 
+/** A hung model call must not outlive the buyer's short-lived payment signature. */
+export const AI_TIMEOUT_MS = 20_000;
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`AI timed out after ${ms} ms`)), ms),
+    ),
+  ]);
+}
+
 const TEXT_MODEL = "@cf/meta/llama-guard-3-8b";
 const IMAGE_MODEL = "@cf/mistralai/mistral-small-3.1-24b-instruct";
 
@@ -93,31 +106,38 @@ export interface AiRunner {
 export class WorkersAiModerator implements Moderator {
   constructor(private readonly ai: AiRunner) {}
 
-  async check(card: BoardCard, logoDataUrl: string | null): Promise<Verdict> {
+  async check(card: BoardCard, logo: Logo | null): Promise<Verdict> {
+    // The vision model takes a data URL; Buffer's native encoder keeps this cheap.
+    const logoDataUrl = logo
+      ? `data:${logo.mime};base64,${Buffer.from(logo.bytes).toString("base64")}`
+      : null;
     try {
-      const [text, image] = await Promise.all([
-        this.ai.run(TEXT_MODEL, {
-          messages: [{ role: "user", content: cardText(card) }],
-          response_format: { type: "json_object" },
-          temperature: 0,
-          max_tokens: 32,
-        }),
-        logoDataUrl
-          ? this.ai.run(IMAGE_MODEL, {
-              messages: [
-                {
-                  role: "user",
-                  content: [
-                    { type: "text", text: IMAGE_PROMPT },
-                    { type: "image_url", image_url: { url: logoDataUrl } },
-                  ],
-                },
-              ],
-              temperature: 0,
-              max_tokens: 4,
-            })
-          : Promise.resolve(null),
-      ]);
+      const [text, image] = await withTimeout(
+        Promise.all([
+          this.ai.run(TEXT_MODEL, {
+            messages: [{ role: "user", content: cardText(card) }],
+            response_format: { type: "json_object" },
+            temperature: 0,
+            max_tokens: 32,
+          }),
+          logoDataUrl
+            ? this.ai.run(IMAGE_MODEL, {
+                messages: [
+                  {
+                    role: "user",
+                    content: [
+                      { type: "text", text: IMAGE_PROMPT },
+                      { type: "image_url", image_url: { url: logoDataUrl } },
+                    ],
+                  },
+                ],
+                temperature: 0,
+                max_tokens: 4,
+              })
+            : Promise.resolve(null),
+        ]),
+        AI_TIMEOUT_MS,
+      );
       const t = parseGuard((text as { response?: unknown } | null)?.response);
       if (t.ok !== true) return t;
       if (!logoDataUrl) return t;
@@ -133,8 +153,11 @@ export class WorkersAiModerator implements Moderator {
 export const allowAll: Moderator = { check: async () => ({ ok: true }) };
 
 /** Stable cache key for a card and its logo, so the paid retry doesn't re-run the models. */
-export async function verdictKey(card: BoardCard, logoDataUrl: string | null): Promise<string> {
-  const data = new TextEncoder().encode(JSON.stringify([card, logoDataUrl ?? ""]));
-  const hash = await crypto.subtle.digest("SHA-256", data);
-  return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
+export async function verdictKey(card: BoardCard, logo: Logo | null): Promise<string> {
+  // Hash the logo bytes on their own, then the card text plus that hash (cheap, small input).
+  const hex = (buf: ArrayBuffer) =>
+    [...new Uint8Array(buf)].map((x) => x.toString(16).padStart(2, "0")).join("");
+  const logoHash = logo ? hex(await crypto.subtle.digest("SHA-256", logo.bytes)) : "";
+  const data = new TextEncoder().encode(JSON.stringify([card, logoHash]));
+  return hex(await crypto.subtle.digest("SHA-256", data));
 }

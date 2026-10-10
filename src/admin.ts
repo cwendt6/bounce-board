@@ -8,6 +8,9 @@ import type { Snapshot } from "./sources";
 const API = `${import.meta.env.BASE_URL}api`;
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
 let token = "";
+/** The holder the admin is looking at; the kill switch only removes this one. */
+let currentId: string | null = null;
+let currentLabel = "";
 try {
   token = sessionStorage.getItem("bb-admin") ?? "";
 } catch {
@@ -30,6 +33,12 @@ async function api(path: string, init: RequestInit = {}) {
     },
   });
   if (res.status === 401) throw new Error("Wrong admin token.");
+  if (res.status === 409) {
+    await refresh();
+    throw new Error(
+      "The holder changed before your kill, so nothing was removed. The page now shows the new holder.",
+    );
+  }
   if (!res.ok) throw new Error(`Request failed (${res.status}).`);
   return res.json();
 }
@@ -62,10 +71,16 @@ async function remove(id: string, label: string) {
   }
 }
 
-async function refresh() {
-  const state = (await (await fetch(`${API}/state`)).json()) as Snapshot;
-  const label = (c: { name: string; ticker?: string }) =>
-    c.ticker ? `$${c.ticker} (${c.name})` : c.name;
+const label = (c: { name: string; ticker?: string }) =>
+  c.ticker ? `$${c.ticker} (${c.name})` : c.name;
+
+/** The live holder and queue. The kill switch needs only this, not the reports. */
+async function loadState() {
+  const res = await fetch(`${API}/state`);
+  if (!res.ok) throw new Error(`Couldn't load the board (${res.status}).`);
+  const state = (await res.json()) as Snapshot;
+  currentId = state.current?.id ?? null;
+  currentLabel = state.current ? label(state.current.card) : "";
   $("current").textContent = state.current
     ? `${label(state.current.card)} · ${state.current.card.link}`
     : "Empty";
@@ -79,6 +94,10 @@ async function refresh() {
         )
       : [li("Nobody queued.")]),
   );
+}
+
+async function refresh() {
+  await loadState();
   const reports = (await api("/admin/reports")) as {
     takeoverId: string;
     card: { name: string; ticker?: string; link: string };
@@ -127,15 +146,29 @@ $("token-form").addEventListener("submit", (e) => {
 });
 
 $("kill").addEventListener("click", async () => {
-  const reason = ($("kill-reason") as HTMLInputElement).value || "removed by admin";
-  if (!confirm(`Remove the current holder now? Reason: ${reason}`)) return;
+  const killButton = $("kill") as HTMLButtonElement;
+  if (killButton.disabled) return;
+  killButton.disabled = true; // one kill at a time: a double click must not open two dialogs
   try {
-    await api("/admin/kill", { method: "POST", body: JSON.stringify({ reason }) });
+    const reason = ($("kill-reason") as HTMLInputElement).value || "removed by admin";
+    // Load the live holder first: this page doesn't poll, so what it shows may be old.
+    await loadState();
+    const id = currentId;
+    if (!id) {
+      say("Nobody is holding the box.", true);
+      return;
+    }
+    if (!confirm(`Remove ${currentLabel} now? Reason: ${reason}`)) return;
+    // The server only removes this exact holder, so a change during the dialog is safe.
+    await api("/admin/kill", { method: "POST", body: JSON.stringify({ id, reason }) });
     say("Current holder removed.");
-    await refresh();
   } catch (e) {
     say((e as Error).message, true);
+    return;
+  } finally {
+    killButton.disabled = false;
   }
+  await refresh().catch((e: Error) => say(e.message, true));
 });
 
 if (token) unlock();

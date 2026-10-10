@@ -235,15 +235,6 @@ function holderRow(holder: CardView, extra: Child[] = []): HTMLLIElement {
     : h("span", { class: "logo", "aria-hidden": "true" }, initials(holder.name));
   const meta: Child[] = [];
   if (holder.chain) meta.push(h("span", { class: `chain ${holder.chain}` }, holder.chain));
-  if (holder.tokenCheck === "unverified") {
-    meta.push(
-      h(
-        "span",
-        { class: "chain unverified", title: "Token checks couldn't run for this listing" },
-        "unverified",
-      ),
-    );
-  }
   if (holder.chain && holder.contract) {
     const ca = holder.contract;
     const btn = h(
@@ -525,7 +516,19 @@ function setupTakeDialog() {
   const note = document.querySelector(".queue .fine");
   if (note) note.textContent = "Payments: USDC on Base Sepolia (testnet).";
 
+  /** Set once a signed payment may still settle; the page must be reloaded to pay again. */
+  let pendingPayment = false;
+  /** The "do not pay again" warning. Once set, nothing else may replace it. */
+  let pendingNotice: (string | Node)[] | null = null;
+
   const say = (msg: string, error = false) => {
+    if (pendingNotice) {
+      status.replaceChildren(
+        ...pendingNotice.map((n) => (typeof n === "string" ? n : n.cloneNode(true))),
+      );
+      status.classList.add("error");
+      return;
+    }
     status.replaceChildren(msg);
     status.classList.toggle("error", error);
   };
@@ -574,6 +577,7 @@ function setupTakeDialog() {
       say("Name and link are required.", true);
       return;
     }
+    if (pendingPayment) return;
     submit.disabled = true;
     try {
       const { takeTheBox } = await import("./pay-client");
@@ -591,6 +595,30 @@ function setupTakeDialog() {
       logoData = null;
       preview.hidden = true;
     } catch (err) {
+      const pending = err as { pending?: boolean; tx?: string | null; message?: string };
+      if (pending.pending) {
+        // A payment may be in flight. Keep the button off so nobody signs a second one.
+        pendingPayment = true;
+        pendingNotice = [
+          `${pending.message ?? "Your payment may still go through. Do not pay again."} Reload the page once you have checked your wallet.`,
+          ...(pending.tx
+            ? [
+                " ",
+                h(
+                  "a",
+                  {
+                    href: `${EXPLORER_TX}${pending.tx}`,
+                    target: "_blank",
+                    rel: "noopener noreferrer",
+                  },
+                  "View transaction",
+                ),
+              ]
+            : []),
+        ];
+        say("");
+        return;
+      }
       const code = (err as { code?: number }).code;
       say(
         code === 4001
@@ -599,7 +627,7 @@ function setupTakeDialog() {
         true,
       );
     } finally {
-      submit.disabled = false;
+      submit.disabled = pendingPayment;
     }
   });
 }

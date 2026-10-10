@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BoardCard } from "./card";
+import type { Logo } from "./logo";
 import {
   type AiRunner,
   cardText,
@@ -14,7 +15,12 @@ const card: BoardCard = {
   description: "Warm bulb.",
   link: "https://example.com/",
 };
-const LOGO = "data:image/webp;base64,UklGRg==";
+const LOGO: Logo = {
+  mime: "image/webp",
+  bytes: Uint8Array.from([0x52, 0x49, 0x46, 0x46, 4, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]),
+  width: 256,
+  height: 256,
+};
 
 function ai(text: unknown, image: unknown = { response: "SAFE" }): AiRunner & { calls: string[] } {
   const calls: string[] = [];
@@ -90,6 +96,8 @@ describe("WorkersAiModerator", () => {
     expect(a).toMatch(/^[0-9a-f]{64}$/);
     expect(await verdictKey(card, null)).toBe(a);
     expect(await verdictKey(card, LOGO)).not.toBe(a);
+    const other = { ...LOGO, bytes: Uint8Array.from([...LOGO.bytes, 1]) };
+    expect(await verdictKey(card, other)).not.toBe(await verdictKey(card, LOGO));
     expect(await verdictKey({ ...card, name: "Other" }, null)).not.toBe(a);
   });
 });

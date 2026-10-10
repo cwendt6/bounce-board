@@ -1,5 +1,6 @@
 import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import { ipBucket } from "./limiter";
 
 const limiter = (name: string) => env.LIMITER.get(env.LIMITER.idFromName(name));
 const rule = { limit: 3, windowMs: 60_000 };
@@ -36,5 +37,87 @@ describe("route limits", () => {
     }
     expect(last?.status).toBe(429);
     expect(Number(last?.headers.get("Retry-After"))).toBeGreaterThan(0);
+  });
+});
+
+describe("peek and hitAll", () => {
+  it("peek counts nothing", async () => {
+    const l = limiter("peek");
+    const t = Date.UTC(2026, 9, 1, 12, 0, 0);
+    for (let i = 0; i < 5; i++) expect((await l.peek("k", rule, t)).ok).toBe(true);
+    for (let i = 0; i < 3; i++) await l.hit("k", rule, t);
+    expect((await l.peek("k", rule, t)).ok).toBe(false);
+  });
+
+  it("hitAll counts every key or none", async () => {
+    const l = limiter("hitall");
+    const t = Date.UTC(2026, 9, 1, 12, 0, 0);
+    for (let i = 0; i < 3; i++) await l.hit("full", rule, t);
+    const r = await l.hitAll(
+      [
+        { key: "free", rule },
+        { key: "full", rule },
+      ],
+      t,
+    );
+    expect(r.ok).toBe(false);
+    // "free" was not counted, so it still has all 3 slots.
+    for (let i = 0; i < 3; i++) expect((await l.hit("free", rule, t)).ok).toBe(true);
+    expect((await l.hit("free", rule, t)).ok).toBe(false);
+  });
+
+  it("unhitAll gives back exactly one hit per key", async () => {
+    const l = limiter("unhit");
+    const t = Date.UTC(2026, 9, 1, 12, 0, 0);
+    const keys = [
+      { key: "u1", rule },
+      { key: "u2", rule },
+    ];
+    for (let i = 0; i < 3; i++) await l.hitAll(keys, t);
+    expect((await l.peek("u1", rule, t)).ok).toBe(false);
+    await l.unhitAll(keys, t);
+    // One slot back, not the whole window.
+    expect((await l.hitAll(keys, t)).ok).toBe(true);
+    expect((await l.hitAll(keys, t)).ok).toBe(false);
+  });
+
+  it("unhitAll never takes a count below zero", async () => {
+    const l = limiter("unhit-floor");
+    const t = Date.UTC(2026, 9, 1, 12, 0, 0);
+    await l.hit("f", rule, t);
+    await l.unhitAll([{ key: "f", rule }], t);
+    await l.unhitAll([{ key: "f", rule }], t); // a double release must not make room for 4
+    for (let i = 0; i < 3; i++) expect((await l.hit("f", rule, t)).ok).toBe(true);
+    expect((await l.hit("f", rule, t)).ok).toBe(false);
+  });
+});
+
+describe("claim", () => {
+  it("lets only the first caller claim a key until it expires", async () => {
+    const l = limiter("claims");
+    const t = Date.UTC(2026, 9, 1, 12, 0, 0);
+    expect(await l.claim("auth:a", t + 60_000, t)).toBe(true);
+    expect(await l.claim("auth:a", t + 60_000, t + 1_000)).toBe(false);
+    expect(await l.claim("auth:b", t + 60_000, t)).toBe(true);
+    // After it expires, it can be claimed again.
+    expect(await l.claim("auth:a", t + 200_000, t + 61_000)).toBe(true);
+  });
+});
+
+describe("ipBucket", () => {
+  it("keeps IPv4 addresses whole", () => {
+    expect(ipBucket("203.0.113.7")).toBe("203.0.113.7");
+  });
+
+  it("groups IPv6 addresses by /64, including compressed forms", () => {
+    const a = ipBucket("2001:db8:abcd:12::1");
+    expect(a).toBe("2001:db8:abcd:12::/64");
+    expect(ipBucket("2001:0db8:abcd:0012:ffff:ffff:ffff:ffff")).toBe(a);
+    expect(ipBucket("2001:db8:abcd:13::1")).not.toBe(a);
+    expect(ipBucket("::1")).toBe("0:0:0:0::/64");
+    expect(ipBucket("2001:db8:abcd:12::1", 48)).toBe("2001:db8:abcd::/48");
+    expect(ipBucket("2001:db8:abcd:ff00::9", 48)).toBe("2001:db8:abcd::/48");
+    expect(ipBucket("203.0.113.7", 48)).toBe("203.0.113.7");
+    expect(ipBucket("2001:db8::")).toBe("2001:db8:0:0::/64");
   });
 });

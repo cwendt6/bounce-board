@@ -2,6 +2,8 @@ import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import type { Snapshot } from "./board";
 import { validateCard } from "./card";
+import images from "./fixtures/canvas-images.json";
+import { parseLogo } from "./logo";
 
 const card = (name: string) => {
   const r = validateCard({ name, description: "test", link: "https://example.com" });
@@ -19,7 +21,8 @@ describe("kill switch", () => {
     await b.enqueue({ id: id(1), paidAtMs: t, card: card("Bad Actor") });
     await b.enqueue({ id: id(2), paidAtMs: t + 1, card: card("Next Up") });
     const before = Date.now();
-    const s = await b.kill("scam");
+    const { killed, snapshot: s } = await b.kill("scam", id(1));
+    expect(killed).toBe(true);
     expect(s.current?.id).toBe(id(2));
     expect(s.current?.startMs).toBeGreaterThanOrEqual(before);
     // Removed reigns don't show anywhere.
@@ -33,10 +36,44 @@ describe("kill switch", () => {
     await b.enqueue({ id: id(3), paidAtMs: long, card: card("Good Holder") });
     await b.enqueue({ id: id(4), paidAtMs: long + 1, card: card("Bad Actor") });
     const before = (await b.snapshot()).stats.takeovers;
-    const s = await b.kill("nsfw");
+    const { snapshot: s } = await b.kill("nsfw", id(4));
     expect(s.current?.card.name).toBe("Good Holder");
     expect(s.current?.id).not.toBe(id(3));
     expect(s.stats.takeovers).toBe(before - 1);
+  });
+
+  it("ignores a stale kill aimed at a holder who already left", async () => {
+    const b = stub("kill-stale");
+    const t = Date.now() - 10 * 60_000;
+    await b.enqueue({ id: id(7), paidAtMs: t, card: card("Earlier") });
+    await b.enqueue({ id: id(8), paidAtMs: t + 1, card: card("Innocent Buyer") });
+    const r = await b.kill("scam", id(7));
+    expect(r.killed).toBe(false);
+    expect(r.snapshot.current?.id).toBe(id(8));
+  });
+
+  it("killing a restored holder also removes the reign it came from", async () => {
+    const b = stub("kill-restored");
+    const long = Date.now() - 10 * 60_000;
+    await b.enqueue({ id: id(9), paidAtMs: long, card: card("Older Fine") });
+    await b.enqueue({ id: id(10), paidAtMs: long + 1, card: card("Bad Content") });
+    await b.enqueue({ id: id(11), paidAtMs: long + 2, card: card("Also Bad") });
+    // Also Bad holds; kill it: Bad Content (previous) is restored.
+    const first = await b.kill("scam", id(11));
+    expect(first.snapshot.current?.card.name).toBe("Bad Content");
+    // Kill the restored copy: Bad Content must not come back; Older Fine does.
+    const second = await b.kill("scam", first.snapshot.current?.id);
+    expect(second.snapshot.current?.card.name).toBe("Older Fine");
+  });
+
+  it("deletes the logo of a removed listing", async () => {
+    const b = stub("kill-logo");
+    const logo = parseLogo(images.webp_256);
+    if (!logo.ok || !logo.logo) throw new Error("fixture");
+    await b.enqueue({ id: id(12), paidAtMs: Date.now(), card: card("Logo Holder") }, logo.logo);
+    expect(await b.logo(id(12))).not.toBeNull();
+    await b.kill("nsfw", id(12));
+    expect(await b.logo(id(12))).toBeNull();
   });
 
   it("removes a queued takeover", async () => {
