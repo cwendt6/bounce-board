@@ -61,20 +61,64 @@ export const HOSTING_SUFFIXES = new Set([
   "webflow.io",
   "framer.website",
   "ipfs.io",
+  "deno.dev",
+  "duckdns.org",
+  "neocities.org",
+  "wordpress.com",
+  "notion.site",
+  "gitbook.io",
+  "bitbucket.io",
+  "loca.lt",
+  "appspot.com",
+  "netlify.com",
+  "railway.app",
+  "up.railway.app",
+  "s3.amazonaws.com",
+  "cloudfront.net",
+  "azurestaticapps.net",
+  "ngrok.io",
+  "ngrok-free.app",
+  "trycloudflare.com",
+  "myshopify.com",
+  "carrd.co",
+  "square.site",
+  "godaddysites.com",
+  "000webhostapp.com",
+  "pythonanywhere.com",
+  "repl.co",
+  "eth.limo",
+  "eth.link",
   "co.uk",
+  "org.uk",
   "com.au",
+  "net.au",
   "co.jp",
   "com.br",
+  "co.in",
+  "com.mx",
+  "co.kr",
+  "co.nz",
+  "co.za",
+  "com.sg",
+  "com.tr",
+  "com.ar",
+  "com.cn",
+  "com.hk",
 ]);
 
 /**
- * The registrable domain: the last two labels, or three under a known shared suffix
- * (see HOSTING_SUFFIXES). Good enough for brand look-alike checks.
+ * The registrable domain: the longest known shared suffix (see HOSTING_SUFFIXES) plus one
+ * label, or the last two labels. Good enough for brand look-alike checks. This is a short
+ * hand-picked list, not the full Public Suffix List; the exact blocklist still applies.
  */
 export function registrableDomain(host: string): string {
   const parts = host.toLowerCase().replace(/\.+$/, "").split(".");
-  const lastTwo = parts.slice(-2).join(".");
-  return HOSTING_SUFFIXES.has(lastTwo) && parts.length > 2 ? parts.slice(-3).join(".") : lastTwo;
+  for (const n of [3, 2]) {
+    if (parts.length > n && HOSTING_SUFFIXES.has(parts.slice(-n).join("."))) {
+      return parts.slice(-(n + 1)).join(".");
+    }
+  }
+  return parts.slice(-2).join(".");
 }
 
 export function levenshtein(a: string, b: string, max = Number.POSITIVE_INFINITY): number {

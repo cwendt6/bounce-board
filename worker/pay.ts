@@ -147,10 +147,16 @@ export interface TakeDeps {
   /**
    * Per-wallet and per-listing limits on paid takeovers. `peekPaid` checks without counting
    * (before the slow checks); `commitPaid` counts, right before settle, so attempts that are
-   * refused (fake token, flagged content, outages) can't burn anyone's quota.
+   * refused (fake token, flagged content, outages) can't burn anyone's quota. `releasePaid`
+   * undoes a commit (same `at`) when settlement fails, so a replayed signature can't either.
    */
   peekPaid: (payer: string, card: BoardCard) => Promise<{ ok: boolean; retryAfter: number }>;
-  commitPaid: (payer: string, card: BoardCard) => Promise<{ ok: boolean; retryAfter: number }>;
+  commitPaid: (
+    payer: string,
+    card: BoardCard,
+    at: number,
+  ) => Promise<{ ok: boolean; retryAfter: number }>;
+  releasePaid: (payer: string, card: BoardCard, at: number) => Promise<void>;
 }
 
 /**
@@ -255,19 +261,8 @@ export async function processTake(
     return { status: 400, body: { errors: [`rejected: ${verdict.reason}. ${notCharged}`] } };
   }
 
-  // 5. Count the limits now that every check passed (refused if another request got there).
-  const commit = await deps.commitPaid(payer, card.card);
-  if (!commit.ok) {
-    return {
-      status: 429,
-      body: {
-        error: `Too many takeovers from this wallet or for this listing. Try again later. ${notCharged}`,
-      },
-      retryAfter: commit.retryAfter,
-    };
-  }
-
   // The signed authorization expires (validBefore). Don't start a settle that can't finish.
+  // Checked before counting, so a short-lived signature can't burn a listing's quota.
   const validBefore = Number(
     (payload.payload as { authorization?: { validBefore?: string } })?.authorization?.validBefore,
   );
@@ -278,9 +273,29 @@ export async function processTake(
     };
   }
 
+  // 5. Count the limits now that every check passed (refused if another request got there).
+  const committedAt = deps.now();
+  const commit = await deps.commitPaid(payer, card.card, committedAt);
+  if (!commit.ok) {
+    return {
+      status: 429,
+      body: {
+        error: `Too many takeovers from this wallet or for this listing. Try again later. ${notCharged}`,
+      },
+      retryAfter: commit.retryAfter,
+    };
+  }
+
   // 6. Settle. Only now does money move.
-  const s = await deps.gateway.settle(payload, req);
+  let s: SettleResponse;
+  try {
+    s = await deps.gateway.settle(payload, req);
+  } catch (e) {
+    await deps.releasePaid(payer, card.card, committedAt);
+    throw e;
+  }
   if (!s.success || !s.transaction) {
+    await deps.releasePaid(payer, card.card, committedAt);
     return {
       status: 402,
       body: { ...required, error: `settlement failed: ${s.errorReason ?? "unknown"}` },

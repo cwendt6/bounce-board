@@ -101,6 +101,17 @@ export class RateLimiter extends DurableObject<Env> {
     return { ok: true, retryAfter: 0 };
   }
 
+  /** Undo one hitAll (same entries, same `now`), for an action that failed after counting. */
+  unhitAll(entries: { key: string; rule: Rule }[], now: number): void {
+    for (const e of entries) {
+      this.sql.exec(
+        "UPDATE hits SET n = n - 1 WHERE key = ? AND win = ? AND n > 0",
+        e.key,
+        windowStart(now, e.rule.windowMs),
+      );
+    }
+  }
+
   /** Count one hit for `key`; refuses (without counting) once the window is full. */
   hit(key: string, rule: Rule, now = Date.now()): LimitResult {
     const win = windowStart(now, rule.windowMs);

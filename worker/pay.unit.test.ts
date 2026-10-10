@@ -92,6 +92,9 @@ function deps(
       limitedPayer.push(payer);
       return { ok: true, retryAfter: 0 };
     },
+    releasePaid: async () => {
+      ran.push("release");
+    },
   };
 }
 
@@ -238,6 +241,7 @@ describe("processTake", () => {
     const r = await processTake(d, card, "x", "u");
     expect(r.status).toBe(402);
     expect(r.status === 402 && r.body.error).toMatch(/expired.*not been charged/);
+    expect(d.ran).not.toContain("commit");
     expect(g.calls).not.toContain("settle");
   });
 
@@ -275,7 +279,7 @@ describe("processTake", () => {
     expect(g.calls).not.toContain("settle");
   });
 
-  it("does not queue when settlement fails", async () => {
+  it("does not queue when settlement fails, and gives the quota back", async () => {
     const g = fake({
       settle: async () => ({
         success: false,
@@ -284,8 +288,27 @@ describe("processTake", () => {
         network: BASE_SEPOLIA,
       }),
     });
-    const r = await processTake(deps(g), card, "x", "u");
+    const d = deps(g);
+    const r = await processTake(d, card, "x", "u");
     expect(r.status).toBe(402);
+    expect(d.ran.slice(-2)).toEqual(["commit", "release"]);
+  });
+
+  it("gives the quota back when settle throws", async () => {
+    const g = fake({
+      settle: async () => {
+        throw new Error("facilitator down");
+      },
+    });
+    const d = deps(g);
+    await expect(processTake(d, card, "x", "u")).rejects.toThrow(/facilitator down/);
+    expect(d.ran.slice(-2)).toEqual(["commit", "release"]);
+  });
+
+  it("keeps the quota counted after a successful settle", async () => {
+    const d = deps(fake());
+    await processTake(d, card, "x", "u");
+    expect(d.ran).not.toContain("release");
   });
 
   it("builds the sale row after settlement", async () => {

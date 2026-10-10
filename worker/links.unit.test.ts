@@ -76,6 +76,17 @@ describe("link checks", () => {
     expect(checkLink("https://metamsk.vercel.app/", list).ok).toBe(false);
     expect(checkLink("https://coffee-shop.pages.dev/", list)).toEqual({ ok: true });
     expect(registrableDomain("a.metamask.github.io")).toBe("metamask.github.io");
+
+    for (const url of [
+      "https://metamask.deno.dev/",
+      "https://metamask.up.railway.app/",
+      "https://metamask.s3.amazonaws.com/",
+      "https://metamask.eth.limo/",
+      "https://metamask.co.in/",
+    ]) {
+      expect(checkLink(url, list).ok, url).toBe(false);
+    }
+    expect(registrableDomain("x.metamask.up.railway.app")).toBe("metamask.up.railway.app");
   });
 
   it("does not block a brand whose fuzzylist entry has a subdomain", () => {

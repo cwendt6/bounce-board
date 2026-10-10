@@ -39,6 +39,12 @@ const MAX_SMALL_BODY = 4 * 1024;
 
 const limiter = (env: Env) => env.LIMITER.get(env.LIMITER.idFromName("limits"));
 
+/** The limits one paid takeover counts against: the paying wallet and the listing. */
+const paidQuotas = (payer: string, card: BoardCard) => [
+  { key: `wallet:${payer}`, rule: RULES.paidPerWallet },
+  { key: `card:${holderKey(card)}`, rule: RULES.paidPerCard },
+];
+
 async function sha256(text: string): Promise<string> {
   const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
   return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -261,11 +267,8 @@ app.post("/api/take", async (c) => {
           const w = await l.peek(`wallet:${payer}`, RULES.paidPerWallet);
           return w.ok ? l.peek(`card:${holderKey(card)}`, RULES.paidPerCard) : w;
         },
-        commitPaid: (payer, card) =>
-          limiter(c.env).hitAll([
-            { key: `wallet:${payer}`, rule: RULES.paidPerWallet },
-            { key: `card:${holderKey(card)}`, rule: RULES.paidPerCard },
-          ]),
+        commitPaid: (payer, card, at) => limiter(c.env).hitAll(paidQuotas(payer, card), at),
+        releasePaid: (payer, card, at) => limiter(c.env).unhitAll(paidQuotas(payer, card), at),
       },
       read.value,
       c.req.header("PAYMENT-SIGNATURE") ?? c.req.header("X-PAYMENT") ?? null,

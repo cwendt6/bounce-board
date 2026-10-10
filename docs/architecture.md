@@ -37,9 +37,9 @@ Every viewer must see the box in the same place, and the server must agree on co
    - Use the facilitator's verified payer (which covers EIP-3009 and Permit2) for the self-payment check and the wallet and listing rate limits.
    - Peek at the wallet and listing limits without counting them.
    - Run the token checks (8 s timeout) and moderation (20 s timeout).
-   - Count the limits.
    - Refuse with "sign again" if the signature expires within 15 seconds.
-   - Only then settle.
+   - Count the limits.
+   - Only then settle. If settlement fails, the limits are given back.
 
    Any refusal before settlement says "You have not been charged". After settlement the server writes the sale and queues the takeover in one SQLite transaction. The answer is `201` with the tx hash, the snapshot and a `PAYMENT-RESPONSE` header.
 
@@ -69,7 +69,7 @@ Exact fixed-window counters in one SQLite Durable Object (`worker/limiter.ts`, `
 | Paid takeovers per listing (holder key) | 3 per hour | Nobody walls off the board with one card |
 | Reports per IP | 10 per hour | Report flooding |
 
-IPs are SHA-256 hashed before they're used as keys. IPv6 addresses are grouped by /64, because one client usually controls a whole /64. Wallet and listing limits use the facilitator-verified payer. They're peeked at before the slow checks and only counted right before settle, so forged headers and refused attempts (fake token, flagged content, outages) can't burn anyone's quota, and a refused attempt is never charged. The AI quotas and the global cap are counted together, all or nothing, on each uncached moderation run. Over-limit requests get `429` with `Retry-After`. Request bodies are capped before parsing (about 900 KB for takes, 4 KB for reports and admin calls).
+IPs are SHA-256 hashed before they're used as keys. IPv6 addresses are grouped by /64, because one client usually controls a whole /64. Wallet and listing limits use the facilitator-verified payer. They're peeked at before the slow checks and only counted right before settle, so forged headers and refused attempts (fake token, flagged content, outages, a signature about to expire) can't burn anyone's quota, and a refused attempt is never charged. A failed settlement gives the count back, so replaying one signature many times at once can't block a listing either. The AI quotas and the global cap are counted together, all or nothing, on each uncached moderation run. Over-limit requests get `429` with `Retry-After`. Request bodies are capped before parsing (about 900 KB for takes, 4 KB for reports and admin calls).
 
 ## Reports and admin
 
@@ -82,7 +82,7 @@ IPs are SHA-256 hashed before they're used as keys. IPv6 addresses are grouped b
 
 ## Link checks
 
-- **Shared hosting:** hosts like `pages.dev`, `vercel.app` and `github.io` (see `HOSTING_SUFFIXES`) count as public suffixes, so for `metamask.pages.dev` the attacker-controlled label is the one compared.
+- **Shared hosting:** hosts like `pages.dev`, `vercel.app`, `github.io`, `up.railway.app` and `eth.limo`, plus common country suffixes like `co.uk` (see `HOSTING_SUFFIXES`), count as public suffixes, so for `metamask.pages.dev` the attacker-controlled label is the one compared. It's a hand-picked list, not the full Public Suffix List.
 - **Card link** (`worker/links.ts`): blocked if the domain or any parent domain is on MetaMask's open-source phishing list (eth-phishing-detect, about 100k domains) and not whitelisted. It is also blocked if it's a one-edit look-alike of a protected brand from that list's fuzzy list (for example `metamsk.io`), a bare IP address, or a punycode (`xn--`) look-alike.
 - **Descriptions:** may not contain links or domains at all, so no wallet-connect links. The link field is the only place for a URL.
 - **Storage:** the list lives in its own Durable Object (`PhishingListStore`) as a few large text chunks plus one JSON info row. Lookups use an in-memory Set built from the chunks. A refresh writes about 5 rows, and nothing when the content hash is unchanged. A daily cron refreshes it, and it loads on first use. A refresh that looks wrong (fewer than 1,000 domains) keeps the old copy. If the list can't load, only the cheap rules apply.
