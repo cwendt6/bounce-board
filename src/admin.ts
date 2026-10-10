@@ -139,17 +139,22 @@ $("token-form").addEventListener("submit", (e) => {
 
 $("kill").addEventListener("click", async () => {
   const reason = ($("kill-reason") as HTMLInputElement).value || "removed by admin";
-  if (!currentId) {
+  try {
+    // Load the live holder first: this page doesn't poll, so what it shows may be old.
+    await refresh();
+  } catch (e) {
+    say((e as Error).message, true);
+    return;
+  }
+  const id = currentId;
+  if (!id) {
     say("Nobody is holding the box.", true);
     return;
   }
   if (!confirm(`Remove ${currentLabel} now? Reason: ${reason}`)) return;
   try {
-    if (!currentId) {
-      say("Nobody is holding the box.", true);
-      return;
-    }
-    await api("/admin/kill", { method: "POST", body: JSON.stringify({ id: currentId, reason }) });
+    // The server only removes this exact holder, so a change during the dialog is safe.
+    await api("/admin/kill", { method: "POST", body: JSON.stringify({ id, reason }) });
     say("Current holder removed.");
     await refresh();
   } catch (e) {

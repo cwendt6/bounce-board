@@ -60,7 +60,9 @@ export function validateCard(input: unknown): Result {
   } catch {
     url = null;
   }
-  if (url?.protocol !== "https:" || !url.hostname.includes(".") || link.length > 200) {
+  // "localhost." has a dot only because of the trailing one.
+  const host = url?.hostname.replace(/\.+$/, "") ?? "";
+  if (url?.protocol !== "https:" || !host.includes(".") || link.length > 200) {
     errors.push("link: a valid https URL, at most 200 characters");
   }
 

@@ -54,6 +54,13 @@ describe("validateCard", () => {
 });
 
 describe("stripControl", () => {
+  it("rejects links to single-label hosts, even with a trailing dot", () => {
+    for (const link of ["https://localhost./", "https://router./x", "https://intranet/"]) {
+      expect(validateCard({ ...base, link }).ok, link).toBe(false);
+    }
+    expect(validateCard({ ...base, link: "https://example.com./" }).ok).toBe(true);
+  });
+
   it("replaces control characters and trims", () => {
     expect(stripControl("  fake\u0000 air\ndrop\u007f ")).toBe("fake  air drop");
   });

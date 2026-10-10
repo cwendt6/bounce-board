@@ -95,6 +95,9 @@ describe("ipBucket", () => {
     expect(ipBucket("2001:0db8:abcd:0012:ffff:ffff:ffff:ffff")).toBe(a);
     expect(ipBucket("2001:db8:abcd:13::1")).not.toBe(a);
     expect(ipBucket("::1")).toBe("0:0:0:0::/64");
+    expect(ipBucket("2001:db8:abcd:12::1", 48)).toBe("2001:db8:abcd::/48");
+    expect(ipBucket("2001:db8:abcd:ff00::9", 48)).toBe("2001:db8:abcd::/48");
+    expect(ipBucket("203.0.113.7", 48)).toBe("203.0.113.7");
     expect(ipBucket("2001:db8::")).toBe("2001:db8:0:0::/64");
   });
 });

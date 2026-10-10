@@ -35,13 +35,16 @@ Every viewer must see the box in the same place, and the server must agree on co
 3. **Verify, check, settle.** The server runs these steps in order:
    - Verify the payment with the facilitator. This is free and moves no money.
    - Use the facilitator's verified payer (which covers EIP-3009 and Permit2) for the self-payment check and the wallet and listing rate limits.
+   - Refuse with "sign again" if the signature (EIP-3009 `validBefore` or Permit2 `deadline`) has less than 30 seconds left, or has no deadline at all. So an expiring signature can't buy a free AI run.
    - Peek at the wallet and listing limits without counting them.
    - Run the token checks (8 s timeout) and moderation (20 s timeout).
-   - Refuse with "sign again" if the signature expires within 15 seconds.
+   - Refuse with "sign again" if the signature now has less than 15 seconds left.
    - Count the limits.
-   - Only then settle. If settlement fails, the limits are given back.
+   - Only then settle. If the facilitator refuses with no transaction, the limits are given back.
 
-   Any refusal before settlement says "You have not been charged". After settlement the server writes the sale and queues the takeover in one SQLite transaction. The answer is `201` with the tx hash, the snapshot and a `PAYMENT-RESPONSE` header.
+   Any refusal before settlement says "You have not been charged". After settlement the server writes the sale and queues the takeover in one SQLite transaction. The answer is `201` with the tx hash, the snapshot and a `PAYMENT-RESPONSE` header. Each facilitator call times out after 30 s.
+
+If settle throws, times out, or reports `settlement_pending` with a tx hash, the transfer may have gone out. The server never says "try again" then. It logs `SETTLE OUTCOME UNKNOWN <tx> payer <address>`, keeps the limits counted, and answers `202` telling the buyer not to pay again and to check their wallet. These are reconciled by hand for now (an automatic sweeper is planned for mainnet, M4).
 
 If settlement succeeds but queueing fails, the server logs `SETTLED BUT NOT QUEUED <tx>` and answers `500` with the tx hash so the sale can be reconciled. A repeated tx hash is a no-op.
 
@@ -64,12 +67,12 @@ Exact fixed-window counters in one SQLite Durable Object (`worker/limiter.ts`, `
 | Take attempts per IP (IPv6 by /64) | 20 per 10 min | Quote and payment spam |
 | Uncached AI moderation runs, account-wide | 180 per day (`AI_DAILY_CAP`) | Keeps Workers AI inside the free 10,000 neurons; past it, moderation is "unavailable" and nobody is charged |
 | Uncached AI moderation runs per verified payer | 5 per day | Stops one funded wallet from draining the shared AI budget with verified-but-never-settled attempts |
-| Uncached AI moderation runs per IP bucket | 10 per day | Same, across wallets from one place |
+| Uncached AI moderation runs per IP bucket (IPv6 by /48) | 10 per day | Same, across wallets from one place. Coarser for IPv6 because a VPS gets thousands of /64s |
 | Paid takeovers per wallet | 10 per hour | Spam control |
 | Paid takeovers per listing (holder key) | 3 per hour | Nobody walls off the board with one card |
 | Reports per IP | 10 per hour | Report flooding |
 
-IPs are SHA-256 hashed before they're used as keys. IPv6 addresses are grouped by /64, because one client usually controls a whole /64. Wallet and listing limits use the facilitator-verified payer. They're peeked at before the slow checks and only counted right before settle, so forged headers and refused attempts (fake token, flagged content, outages, a signature about to expire) can't burn anyone's quota, and a refused attempt is never charged. A failed settlement gives the count back, so replaying one signature many times at once can't block a listing either. The AI quotas and the global cap are counted together, all or nothing, on each uncached moderation run. Over-limit requests get `429` with `Retry-After`. Request bodies are capped before parsing (about 900 KB for takes, 4 KB for reports and admin calls).
+IPs are SHA-256 hashed before they're used as keys. IPv6 addresses are grouped by /64 (by /48 for the AI quota), because one client usually controls a whole /64. Wallet and listing limits use the facilitator-verified payer. They're peeked at before the slow checks and only counted right before settle, so forged headers and refused attempts (fake token, flagged content, outages, a signature about to expire) can't burn anyone's quota, and a refused attempt is never charged. A settlement the facilitator refuses gives the count back, so replaying one signature many times at once can't block a listing either. The AI quotas and the global cap are counted together, all or nothing, on each uncached moderation run. Over-limit requests get `429` with `Retry-After`. Request bodies are capped before parsing (about 900 KB for takes, 4 KB for reports and admin calls).
 
 ## Reports and admin
 
@@ -83,14 +86,15 @@ IPs are SHA-256 hashed before they're used as keys. IPv6 addresses are grouped b
 ## Link checks
 
 - **Shared hosting:** hosts like `pages.dev`, `vercel.app`, `github.io`, `up.railway.app` and `eth.limo`, plus common country suffixes like `co.uk` (see `HOSTING_SUFFIXES`), count as public suffixes, so for `metamask.pages.dev` the attacker-controlled label is the one compared. It's a hand-picked list, not the full Public Suffix List.
-- **Card link** (`worker/links.ts`): blocked if the domain or any parent domain is on MetaMask's open-source phishing list (eth-phishing-detect, about 100k domains) and not whitelisted. It is also blocked if it's a one-edit look-alike of a protected brand from that list's fuzzy list (for example `metamsk.io`), a bare IP address, or a punycode (`xn--`) look-alike.
+- **Card link** (`worker/links.ts`): blocked if the domain or any parent domain is on MetaMask's open-source phishing list (eth-phishing-detect, about 100k domains) and not whitelisted. It is also blocked if it's a look-alike of a protected brand from that list's fuzzy list, a bare IP address, a single-label host (`localhost.`), or a punycode (`xn--`) look-alike.
+- **Look-alikes:** the registrable label may be at most one edit from a brand label (`metamsk.io`), or exactly equal for short brand labels like `dydx`. The list's tolerance is capped at 1 because we compare one label, not the whole name. A subdomain label may not be the brand exactly (`metamask.evil.workers.dev`). A few official alternate domains are allowed (`OFFICIAL_ALTERNATES`).
 - **Descriptions:** may not contain links or domains at all, so no wallet-connect links. The link field is the only place for a URL.
 - **Storage:** the list lives in its own Durable Object (`PhishingListStore`) as a few large text chunks plus one JSON info row. Lookups use an in-memory Set built from the chunks. A refresh writes about 5 rows, and nothing when the content hash is unchanged. A daily cron refreshes it, and it loads on first use. A refresh that looks wrong (fewer than 1,000 domains) keeps the old copy. If the list can't load, only the cheap rules apply.
 - **Plan check:** probed on Cole's account on 2026-10-01. Durable Object alarms fire on the current plan (3,001 ms for a 3 s alarm), and a Durable Object loaded the full list in one request.
 
 ## Token checks
 
-Cards that list a token (ticker, chain, contract) are checked against DexScreener's public API before moderation and before the price quote (`worker/tokens.ts`):
+Cards that list a token (ticker, chain, contract) are checked against DexScreener's public API after the payment signature is verified and before moderation (`worker/tokens.ts`):
 
 1. The ticker must match the token actually at that contract. The address may be on either side of a pair.
 2. The token's pools must hold at least $1,000 of liquidity in total.

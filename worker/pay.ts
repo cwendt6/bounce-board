@@ -24,6 +24,26 @@ import type { TokenCheck } from "./tokens";
 export const BASE_MAINNET = "eip155:8453";
 export const BASE_SEPOLIA = "eip155:84532";
 const USDC_DECIMALS = 6;
+const FACILITATOR_TIMEOUT_MS = 30_000;
+/** Seconds a signature must have left after verify, before the slow checks run. */
+export const MIN_SECONDS_BEFORE_CHECKS = 30;
+/** Seconds a signature must have left right before settle. */
+export const MIN_SECONDS_BEFORE_SETTLE = 15;
+
+/**
+ * The signature's deadline in unix seconds: EIP-3009 `validBefore` or Permit2 `deadline`.
+ * null if the payload has neither, which is refused rather than waved through.
+ */
+export function paymentDeadline(payload: PaymentPayload): number | null {
+  const p = payload.payload as {
+    authorization?: { validBefore?: unknown };
+    permit2Authorization?: { deadline?: unknown };
+  } | null;
+  const raw = p?.authorization?.validBefore ?? p?.permit2Authorization?.deadline;
+  if (typeof raw !== "string" && typeof raw !== "number") return null;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
 
 export interface PayConfig {
   network: string;
@@ -63,8 +83,10 @@ export class X402Gateway implements Gateway {
   private ready: Promise<void> | null = null;
 
   constructor(private readonly cfg: PayConfig) {
+    // 30 s per facilitator call instead of the library's 90 s, so a slow facilitator can't
+    // outlast the buyer's 120 s signature.
     this.server = new x402ResourceServer(
-      new HTTPFacilitatorClient({ url: cfg.facilitatorUrl }),
+      new HTTPFacilitatorClient({ url: cfg.facilitatorUrl, timeoutMs: FACILITATOR_TIMEOUT_MS }),
     ).register(cfg.network as `${string}:${string}`, new ExactEvmScheme());
   }
 
@@ -130,6 +152,8 @@ export type TakeResult =
   | { status: 503; body: { error: string } }
   | { status: 429; body: { error: string }; retryAfter: number }
   | { status: 402; body: PaymentRequired }
+  /** Settle didn't confirm, but the transfer may have been broadcast. Never "try again". */
+  | { status: 202; body: { error: string; tx: string | null }; detail: string }
   | { status: 201; card: BoardCard; logo: Logo | null; sale: Sale; settle: SettleResponse };
 
 export interface TakeDeps {
@@ -157,6 +181,21 @@ export interface TakeDeps {
     at: number,
   ) => Promise<{ ok: boolean; retryAfter: number }>;
   releasePaid: (payer: string, card: BoardCard, at: number) => Promise<void>;
+}
+
+function unknownOutcome(tx: string | null, payer: string, why: string): TakeResult {
+  const ref = tx ? ` (transaction ${tx})` : "";
+  return {
+    status: 202,
+    body: {
+      error:
+        `We could not confirm your payment${ref}. It may still go through, so do not pay again. ` +
+        "Check your wallet in a few minutes. If 1 USDC left it and your card is not in the " +
+        "queue, contact us with the transaction hash and we will queue your card or refund you.",
+      tx,
+    },
+    detail: `payer ${payer}: ${why}`,
+  };
 }
 
 /**
@@ -224,6 +263,19 @@ export async function processTake(
     };
   }
 
+  // The signature must outlast the slow checks below, or they'd run (and spend the AI budget)
+  // for a payment that can never settle.
+  const notCharged = "You have not been charged.";
+  const deadline = paymentDeadline(payload);
+  const expiring = (minSeconds: number) =>
+    deadline === null || deadline * 1000 - deps.now() < minSeconds * 1000;
+  if (expiring(MIN_SECONDS_BEFORE_CHECKS)) {
+    return {
+      status: 402,
+      body: { ...required, error: `Your payment signature expired. Sign again. ${notCharged}` },
+    };
+  }
+
   // 3. Limits on the verified payer, so nobody can burn another wallet's or listing's quota
   //    with forged headers. Peek only: nothing is counted until the checks below pass.
   const lim = await deps.peekPaid(payer, card.card);
@@ -236,7 +288,6 @@ export async function processTake(
   }
 
   // 4. Token checks and moderation, still before any money moves.
-  const notCharged = "You have not been charged.";
   const tok = await deps.checkToken(card.card);
   if (!tok.ok) {
     if (tok.unavailable) {
@@ -261,12 +312,9 @@ export async function processTake(
     return { status: 400, body: { errors: [`rejected: ${verdict.reason}. ${notCharged}`] } };
   }
 
-  // The signed authorization expires (validBefore). Don't start a settle that can't finish.
-  // Checked before counting, so a short-lived signature can't burn a listing's quota.
-  const validBefore = Number(
-    (payload.payload as { authorization?: { validBefore?: string } })?.authorization?.validBefore,
-  );
-  if (Number.isFinite(validBefore) && validBefore * 1000 - deps.now() < 15_000) {
+  // Checked again before counting, so a signature that ran out during the checks can't burn
+  // a listing's quota, and we never start a settle that can't finish.
+  if (expiring(MIN_SECONDS_BEFORE_SETTLE)) {
     return {
       status: 402,
       body: { ...required, error: `Your payment signature expired. Sign again. ${notCharged}` },
@@ -286,13 +334,17 @@ export async function processTake(
     };
   }
 
-  // 6. Settle. Only now does money move.
+  // 6. Settle. Only now does money move. A settle that errors, times out or reports
+  // "pending" may still have broadcast the transfer, so the buyer must not pay again and the
+  // counts stay. Only a plain refusal with no transaction gives the counts back.
   let s: SettleResponse;
   try {
     s = await deps.gateway.settle(payload, req);
   } catch (e) {
-    await deps.releasePaid(payer, card.card, committedAt);
-    throw e;
+    return unknownOutcome(null, payer, e instanceof Error ? e.message : String(e));
+  }
+  if (!s.success && s.transaction) {
+    return unknownOutcome(s.transaction, payer, s.errorReason ?? "unknown");
   }
   if (!s.success || !s.transaction) {
     await deps.releasePaid(payer, card.card, committedAt);

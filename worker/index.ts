@@ -59,6 +59,12 @@ async function ipKey(c: C): Promise<string> {
   return `ip:${(await sha256(clientBucket(c))).slice(0, 32)}`;
 }
 
+/** The AI quota uses a coarser IPv6 bucket (/48): a VPS gets thousands of /64s for free. */
+async function aiIpKey(c: C): Promise<string> {
+  const bucket = ipBucket(c.req.header("CF-Connecting-IP") ?? "unknown", 48);
+  return `ip48:${(await sha256(bucket)).slice(0, 32)}`;
+}
+
 /** null if allowed; otherwise a 429 response with Retry-After. */
 async function limited(env: Env, key: string, rule: Rule): Promise<Response | null> {
   const r = await limiter(env).hit(key, rule);
@@ -140,7 +146,7 @@ app.post("/api/dev/take", async (c) => {
       : c.json({ errors: [`token check: ${tok.reason}`] }, 400);
   }
   const verdict = await moderate(c.env, result.card, logo.logo, [
-    { key: `ai:${await ipKey(c)}`, rule: RULES.aiPerIp },
+    { key: `ai:${await aiIpKey(c)}`, rule: RULES.aiPerIp },
   ]);
   if (verdict.ok === "unavailable")
     return c.json({ error: "Moderation is unavailable right now." }, 503);
@@ -258,7 +264,7 @@ app.post("/api/take", async (c) => {
         moderate: async (card, logo, payer) =>
           moderate(c.env, card, logo, [
             { key: `ai:wallet:${payer}`, rule: RULES.aiPerPayer },
-            { key: `ai:${await ipKey(c)}`, rule: RULES.aiPerIp },
+            { key: `ai:${await aiIpKey(c)}`, rule: RULES.aiPerIp },
           ]),
         checkToken: (card) => tokenCheck(c.env, card),
         checkLink: (link) => linkCheck(c.env, link),
@@ -279,6 +285,12 @@ app.post("/api/take", async (c) => {
     return c.json({ error: "payment service unavailable, try again" }, 502);
   }
 
+  if (result.status === 202) {
+    // Money may have moved with no sale row. Reconcile this tx (or payer) by hand.
+    console.error("SETTLE OUTCOME UNKNOWN", result.body.tx ?? "no tx", result.detail);
+    c.header("Cache-Control", "no-store");
+    return c.json(result.body, 202);
+  }
   if (result.status === 400) return c.json(result.body, 400);
   if (result.status === 503) return c.json(result.body, 503);
   if (result.status === 429) {

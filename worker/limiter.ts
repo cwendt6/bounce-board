@@ -39,8 +39,9 @@ export const aiDailyRule = (cap: number): Rule => ({ limit: cap, windowMs: 86_40
 /**
  * The rate-limit bucket for a client IP: IPv4 as is, IPv6 by its /64 prefix (one household or
  * one server usually controls a whole /64, so per-address buckets are trivially bypassed).
+ * Pass 48 for a coarser bucket (one site or VPS allocation), used for the AI quota.
  */
-export function ipBucket(ip: string): string {
+export function ipBucket(ip: string, prefix: 48 | 64 = 64): string {
   const raw = ip.trim().toLowerCase();
   if (!raw.includes(":")) return raw || "unknown";
   const [head, tail] = raw.split("::");
@@ -49,9 +50,9 @@ export function ipBucket(ip: string): string {
   const groups =
     tail === undefined ? h : [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill("0"), ...t];
   return `${groups
-    .slice(0, 4)
+    .slice(0, prefix / 16)
     .map((g) => (g || "0").replace(/^0+(?=.)/, ""))
-    .join(":")}::/64`;
+    .join(":")}::/${prefix}`;
 }
 
 /** Pure window math, shared by the Durable Object and tests. */

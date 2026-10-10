@@ -34,6 +34,12 @@ const required: PaymentRequired = {
   accepts: [req],
 };
 const card = { name: "Lamp Oil", description: "Warm bulb.", link: "https://example.com" };
+const NOW = 1_790_000_000_000;
+const NOW_SEC = NOW / 1000;
+/** A normal EIP-3009 payload: signed just now, valid for 120 s. */
+const auth = (over: Record<string, string> = {}) => ({
+  authorization: { validBefore: String(NOW_SEC + 120), ...over },
+});
 
 function fake(over: Partial<Gateway> = {}): Gateway & { calls: string[] } {
   const calls: string[] = [];
@@ -59,17 +65,19 @@ function fake(over: Partial<Gateway> = {}): Gateway & { calls: string[] } {
 function deps(
   gateway: Gateway,
   payload: Partial<PaymentPayload> = {},
-): TakeDeps & { ran: string[]; limitedPayer: string[] } {
+): TakeDeps & { ran: string[]; limitedPayer: string[]; clock: { t: number } } {
   const ran: string[] = [];
   const limitedPayer: string[] = [];
+  const clock = { t: NOW };
   return {
     ran,
     limitedPayer,
+    clock,
     gateway,
     cfg,
-    now: () => 1_790_000_000_000,
+    now: () => clock.t,
     newId: () => "sale-1",
-    decodePayment: () => ({ x402Version: 2, accepted: req, payload: {}, ...payload }),
+    decodePayment: () => ({ x402Version: 2, accepted: req, payload: auth(), ...payload }),
     moderate: async (_card, _logo, payer) => {
       ran.push(`moderate:${payer}`);
       return { ok: true };
@@ -142,14 +150,14 @@ describe("processTake", () => {
 
   it("applies limits to the facilitator-verified payer, not the claimed one", async () => {
     const g = fake();
-    const d = deps(g, { payload: { authorization: { from: "0xvictim" } } });
+    const d = deps(g, { payload: auth({ from: "0xvictim" }) });
     await processTake(d, card, "x", "u");
     expect(d.limitedPayer).toEqual(["0xbuyer", "0xbuyer"]);
   });
 
   it("never counts limits for a payment that fails verification", async () => {
     const g = fake({ verify: async () => ({ ok: false, reason: "invalid_signature" }) });
-    const d = deps(g, { payload: { authorization: { from: "0xvictim" } } });
+    const d = deps(g, { payload: auth({ from: "0xvictim" }) });
     const r = await processTake(d, card, "x", "u");
     expect(r.status).toBe(402);
     expect(d.ran).not.toContain("peek");
@@ -234,15 +242,51 @@ describe("processTake", () => {
     expect(g.calls).not.toContain("settle");
   });
 
-  it("refuses to settle a signature that is about to expire", async () => {
+  it("refuses a short-lived signature before any slow check or count", async () => {
+    // The facilitator accepts anything 6 s ahead; we need 30 s before spending AI or quota.
+    for (const left of [5, 10, 29]) {
+      const g = fake();
+      const d = deps(g, { payload: auth({ validBefore: String(NOW_SEC + left) }) });
+      const r = await processTake(d, card, "x", "u");
+      expect(r.status).toBe(402);
+      expect(r.status === 402 && r.body.error).toMatch(/expired.*not been charged/);
+      expect(d.ran).toEqual(["link"]);
+      expect(g.calls).not.toContain("settle");
+    }
+  });
+
+  it("refuses, uncounted, a signature that ran out during the checks", async () => {
     const g = fake();
-    const nowSec = 1_790_000_000;
-    const d = deps(g, { payload: { authorization: { validBefore: String(nowSec + 5) } } });
-    const r = await processTake(d, card, "x", "u");
+    const d = deps(g, { payload: auth({ validBefore: String(NOW_SEC + 40) }) });
+    const slow = {
+      ...d,
+      moderate: async () => {
+        d.clock.t += 30_000; // 10 s left afterwards
+        return { ok: true as const };
+      },
+    };
+    const r = await processTake(slow, card, "x", "u");
     expect(r.status).toBe(402);
-    expect(r.status === 402 && r.body.error).toMatch(/expired.*not been charged/);
     expect(d.ran).not.toContain("commit");
     expect(g.calls).not.toContain("settle");
+  });
+
+  it("refuses a payload with no deadline instead of skipping the check", async () => {
+    const g = fake();
+    const r = await processTake(deps(g, { payload: {} }), card, "x", "u");
+    expect(r.status).toBe(402);
+    expect(g.calls).not.toContain("settle");
+  });
+
+  it("reads the Permit2 deadline too", async () => {
+    const short = deps(fake(), {
+      payload: { permit2Authorization: { deadline: String(NOW_SEC + 10) } },
+    });
+    expect((await processTake(short, card, "x", "u")).status).toBe(402);
+    const ok = deps(fake(), {
+      payload: { permit2Authorization: { deadline: String(NOW_SEC + 120) } },
+    });
+    expect((await processTake(ok, card, "x", "u")).status).toBe(201);
   });
 
   it("asks the buyer to retry, uncharged, when moderation is unavailable", async () => {
@@ -279,7 +323,7 @@ describe("processTake", () => {
     expect(g.calls).not.toContain("settle");
   });
 
-  it("does not queue when settlement fails, and gives the quota back", async () => {
+  it("does not queue when settlement is refused, and gives the quota back", async () => {
     const g = fake({
       settle: async () => ({
         success: false,
@@ -294,15 +338,36 @@ describe("processTake", () => {
     expect(d.ran.slice(-2)).toEqual(["commit", "release"]);
   });
 
-  it("gives the quota back when settle throws", async () => {
+  it("never says 'try again' when settle errors: the transfer may have gone out", async () => {
     const g = fake({
       settle: async () => {
-        throw new Error("facilitator down");
+        throw new Error("facilitator timeout");
       },
     });
     const d = deps(g);
-    await expect(processTake(d, card, "x", "u")).rejects.toThrow(/facilitator down/);
-    expect(d.ran.slice(-2)).toEqual(["commit", "release"]);
+    const r = await processTake(d, card, "x", "u");
+    expect(r.status).toBe(202);
+    expect(r.status === 202 && r.body.error).toMatch(/do not pay again/);
+    expect(r.status === 202 && r.detail).toMatch(/0xbuyer.*facilitator timeout/);
+    // The counts stay: this may be a real payment.
+    expect(d.ran).not.toContain("release");
+  });
+
+  it("treats settlement_pending with a tx hash as unknown, not failed", async () => {
+    const g = fake({
+      settle: async () => ({
+        success: false,
+        errorReason: "settlement_pending",
+        transaction: "0xpending",
+        network: BASE_SEPOLIA,
+      }),
+    });
+    const d = deps(g);
+    const r = await processTake(d, card, "x", "u");
+    expect(r.status).toBe(202);
+    expect(r.status === 202 && r.body.tx).toBe("0xpending");
+    expect(r.status === 202 && r.body.error).toMatch(/0xpending.*do not pay again/);
+    expect(d.ran).not.toContain("release");
   });
 
   it("keeps the quota counted after a successful settle", async () => {
@@ -327,7 +392,7 @@ describe("processTake", () => {
       tx_hash: "0xabc",
       payer: "0xpayer",
       receiver: PAY_TO,
-      received_at: 1_790_000_000_000,
+      received_at: NOW,
       facilitator: "x402.org",
     });
   });

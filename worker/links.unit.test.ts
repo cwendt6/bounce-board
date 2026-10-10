@@ -89,6 +89,35 @@ describe("link checks", () => {
     expect(registrableDomain("x.metamask.up.railway.app")).toBe("metamask.up.railway.app");
   });
 
+  it("blocks the exact brand as a subdomain label, on shared hosts and elsewhere", () => {
+    expect(checkLink("https://metamask.evil.workers.dev/", list).ok).toBe(false);
+    expect(checkLink("https://metamask.proj.pages.dev/", list).ok).toBe(false);
+    expect(checkLink("https://metamask.example.com/", list).ok).toBe(false);
+    expect(checkLink("https://app.example.com/", list)).toEqual({ ok: true });
+  });
+
+  it("caps the tolerance at 1 and needs an exact match for short brand labels", () => {
+    const loose: PhishingLookup = {
+      ...list,
+      isWhitelisted: () => false,
+      fuzzylist: () => ({ entries: ["uniswap.org", "dydx.exchange"], tolerance: 2 }),
+    };
+    for (const ok of ["https://unisat.io/", "https://dx.com/", "https://dyn.com/"]) {
+      expect(checkLink(ok, loose), ok).toEqual({ ok: true });
+    }
+    expect(checkLink("https://unisvap.org/", loose).ok).toBe(false);
+    expect(checkLink("https://dydx.app/", loose).ok).toBe(false);
+  });
+
+  it("allows official alternate domains of protected brands", () => {
+    expect(checkLink("https://metamask.github.io/test-dapp/", list)).toEqual({ ok: true });
+  });
+
+  it("refuses single-label hosts, including ones with a trailing dot", () => {
+    expect(checkLink("https://localhost./", list).ok).toBe(false);
+    expect(checkLink("https://router/", null).ok).toBe(false);
+  });
+
   it("does not block a brand whose fuzzylist entry has a subdomain", () => {
     const withSub: PhishingLookup = {
       ...list,

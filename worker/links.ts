@@ -139,6 +139,9 @@ export function levenshtein(a: string, b: string, max = Number.POSITIVE_INFINITY
 
 const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
 
+/** Official domains of fuzzylist brands that the label rule below would otherwise block. */
+export const OFFICIAL_ALTERNATES = new Set(["metamask.github.io", "ethereum.foundation"]);
+
 export function checkLink(link: string, list: PhishingLookup | null): LinkCheck {
   let host: string;
   try {
@@ -148,6 +151,7 @@ export function checkLink(link: string, list: PhishingLookup | null): LinkCheck 
   }
   if (IPV4.test(host) || host.startsWith("["))
     return { ok: false, reason: "link: IP addresses are not allowed" };
+  if (!host.includes(".")) return { ok: false, reason: "link: needs a full domain name" };
   if (host.split(".").some((label) => label.startsWith("xn--"))) {
     return { ok: false, reason: "link: look-alike (punycode) domains are not allowed" };
   }
@@ -159,14 +163,20 @@ export function checkLink(link: string, list: PhishingLookup | null): LinkCheck 
   // Look-alikes: compare the registrable domain's main label (login.metamsk.io -> "metamsk")
   // with each protected brand minus its TLD ("metamask"). Distance 0 counts too, so
   // metamask.app is caught; the brand's own domain (and anything whitelisted) is allowed.
+  // Subdomain labels must not be the brand exactly (metamask.evil.workers.dev).
   const registrable = registrableDomain(host);
+  if (OFFICIAL_ALTERNATES.has(registrable)) return { ok: true };
   const label = registrable.split(".")[0];
+  const subLabels = host.slice(0, -registrable.length).split(".").filter(Boolean);
   const { entries, tolerance } = list.fuzzylist();
   for (const brand of entries) {
     const brandDomain = registrableDomain(brand);
     if (registrable === brandDomain) continue;
     const brandLabel = brandDomain.split(".")[0];
-    if (levenshtein(label, brandLabel, tolerance) <= tolerance) {
+    // MetaMask measures distance on more of the name; we compare one label, so the list's
+    // tolerance is capped at 1, and short brand labels (dydx) must match exactly.
+    const tol = brandLabel.length < 6 ? 0 : Math.min(tolerance, 1);
+    if (levenshtein(label, brandLabel, tol) <= tol || subLabels.includes(brandLabel)) {
       return { ok: false, reason: `link: looks like an imitation of ${brand}` };
     }
   }
