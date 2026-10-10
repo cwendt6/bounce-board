@@ -69,6 +69,24 @@ export class RateLimiter extends DurableObject<Env> {
     this.sql.exec(
       "CREATE TABLE IF NOT EXISTS hits (key TEXT NOT NULL, win INTEGER NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (key, win))",
     );
+    this.sql.exec(
+      "CREATE TABLE IF NOT EXISTS claims (key TEXT PRIMARY KEY, until INTEGER NOT NULL) WITHOUT ROWID",
+    );
+  }
+
+  /**
+   * Claim `key` until `until` (ms). true for the first caller, false if it's already claimed.
+   * Used so one signed payment authorization is only ever sent to settle once, across every
+   * Worker isolate.
+   */
+  claim(key: string, until: number, now = Date.now()): boolean {
+    if (Math.random() < 0.01) this.sql.exec("DELETE FROM claims WHERE until < ?", now);
+    const held = this.sql
+      .exec<{ until: number }>("SELECT until FROM claims WHERE key = ?", key)
+      .toArray()[0];
+    if (held && held.until >= now) return false;
+    this.sql.exec("INSERT OR REPLACE INTO claims (key, until) VALUES (?, ?)", key, until);
+    return true;
   }
 
   private count(key: string, win: number): number {

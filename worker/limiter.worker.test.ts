@@ -92,6 +92,18 @@ describe("peek and hitAll", () => {
   });
 });
 
+describe("claim", () => {
+  it("lets only the first caller claim a key until it expires", async () => {
+    const l = limiter("claims");
+    const t = Date.UTC(2026, 9, 1, 12, 0, 0);
+    expect(await l.claim("auth:a", t + 60_000, t)).toBe(true);
+    expect(await l.claim("auth:a", t + 60_000, t + 1_000)).toBe(false);
+    expect(await l.claim("auth:b", t + 60_000, t)).toBe(true);
+    // After it expires, it can be claimed again.
+    expect(await l.claim("auth:a", t + 200_000, t + 61_000)).toBe(true);
+  });
+});
+
 describe("ipBucket", () => {
   it("keeps IPv4 addresses whole", () => {
     expect(ipBucket("203.0.113.7")).toBe("203.0.113.7");

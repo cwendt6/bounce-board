@@ -28,7 +28,7 @@ describe("paidOutcome (reply to a signed payment)", () => {
       [402, { error: "Your payment signature expired. Sign again. You have not been charged." }],
       [429, { error: "Too many takeovers. Try again later." }],
       [503, { error: "Moderation is unavailable right now. You have not been charged." }],
-    ] as const) {
+    ] as [number, { error?: string; errors?: string[] }][]) {
       expect(paidOutcome(status, body).kind, String(status)).toBe("error");
     }
   });

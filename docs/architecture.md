@@ -40,6 +40,7 @@ Every viewer must see the box in the same place, and the server must agree on co
    - Run the token checks (8 s timeout) and moderation (20 s timeout).
    - Refuse with "sign again" if the signature now has less than 15 seconds left.
    - Count the limits.
+   - Claim the authorization (payer plus EIP-3009 or Permit2 nonce) in the limiter Durable Object until it expires. A replay of the same signed payment in another request never reaches settle; it gets `202` "do not pay again".
    - Only then settle. If the result proves no money moved, the limits are given back.
 
    Any refusal before settlement says "You have not been charged". After settlement the server writes the sale and queues the takeover in one SQLite transaction. The answer is `201` with the tx hash, the snapshot and a `PAYMENT-RESPONSE` header. Each facilitator call times out after 30 s.
@@ -55,7 +56,7 @@ Config: `X402_NETWORK` and `FACILITATOR_URL` are vars in `wrangler.jsonc`. `PAY_
 On the Workers Free plan, Durable Objects allow **100,000 SQLite rows written per day**, account-wide. Deletes count, and so do index entries, so a row in a table with a TEXT primary key costs 2. Past the limit, writes fail until 00:00 UTC.
 
 - **Rule for new features:** never write one row per item for large lists. Store blobs and use integer primary keys where possible.
-- **Per paid takeover:** roughly 15 to 20 rows (takeover, sale, logo, status updates, verdict and token-check caches, rate-limit counters). That's several thousand takeovers a day.
+- **Per paid takeover:** roughly 15 to 20 rows (takeover, sale, logo, status updates, verdict and token-check caches, rate-limit counters, the authorization claim). That's several thousand takeovers a day.
 - **Incident, 2026-10-01:** a throwaway probe Worker inserted 101,548 rows in one request and exhausted the day's quota. The first version of the phishing store would have done the same on every daily refresh. It was fixed before deploying.
 
 ## Rate limits

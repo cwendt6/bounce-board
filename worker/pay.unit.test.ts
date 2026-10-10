@@ -1,6 +1,7 @@
 import type { PaymentPayload, PaymentRequired, PaymentRequirements } from "@x402/core/types";
 import { describe, expect, it } from "vitest";
 import {
+  authorizationKey,
   BASE_SEPOLIA,
   classifySettle,
   type Gateway,
@@ -110,6 +111,10 @@ function deps(
       ran.push("release");
       ats.push(at);
     },
+    claimAuthorization: async () => {
+      ran.push("claim");
+      return true;
+    },
   };
 }
 
@@ -151,7 +156,7 @@ describe("processTake", () => {
     const d = deps(g);
     const r = await processTake(d, card, "x", "u");
     expect(r.status).toBe(201);
-    expect(d.ran).toEqual(["link", "peek", "token", "moderate:0xbuyer", "commit"]);
+    expect(d.ran).toEqual(["link", "peek", "token", "moderate:0xbuyer", "commit", "claim"]);
     expect(g.calls).toEqual(["requirements", "verify", "settle"]);
   });
 
@@ -366,7 +371,7 @@ describe("processTake", () => {
     const r = await processTake(slowSettle, card, "x", "u");
     expect(r.status).toBe(402);
     expect(r.status === 402 && r.body.error).toMatch(/not been charged/);
-    expect(d.ran.slice(-2)).toEqual(["commit", "release"]);
+    expect(d.ran.slice(-3)).toEqual(["commit", "claim", "release"]);
     expect(d.ats[0]).toBe(d.ats[1]);
   });
 
@@ -384,7 +389,32 @@ describe("processTake", () => {
     const d = deps(g);
     const r = await processTake(d, card, "x", "u");
     expect(r.status).toBe(402);
-    expect(d.ran.slice(-2)).toEqual(["commit", "release"]);
+    expect(d.ran.slice(-3)).toEqual(["commit", "claim", "release"]);
+  });
+
+  it("sends one signed authorization to settle only once, across requests", async () => {
+    const g = fake();
+    const d = { ...deps(g), claimAuthorization: async () => false };
+    const r = await processTake(d, card, "x", "u");
+    expect(r.status).toBe(202);
+    expect(r.status === 202 && r.body.error).toMatch(/do not pay again/);
+    expect(g.calls).not.toContain("settle");
+  });
+
+  it("claims by payer and nonce, until the authorization expires (at most a day)", async () => {
+    const claims: [string, number][] = [];
+    const d = {
+      ...deps(fake(), { payload: auth({ nonce: "0xABC" }) }),
+      claimAuthorization: async (key: string, until: number) => {
+        claims.push([key, until]);
+        return true;
+      },
+    };
+    await processTake(d, card, "x", "u");
+    expect(claims).toEqual([["auth:0xbuyer:eip3009:0xabc", (NOW_SEC + 120 + 60) * 1000]]);
+    expect(
+      authorizationKey({ payload: { permit2Authorization: { nonce: "7" } } } as never, "0xp"),
+    ).toBe("auth:0xp:permit2:7");
   });
 
   it("never says 'not charged' for 'transaction failed', with or without a tx", async () => {

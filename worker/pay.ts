@@ -164,8 +164,8 @@ const signatureKey = (p: PaymentPayload) => {
  * Wraps the facilitator client so we see every settle attempt, including the one the library
  * repeats after "settlement_pending" (it hands back only the second result, which on another
  * facilitator replica can look like a plain refusal even though the first transfer is out).
- * Traces are keyed by signature and kept for 10 minutes, so concurrent requests carrying the
- * same signature also see each other's broadcasts.
+ * This covers attempts within one request. Replays of the same authorization in other
+ * requests never reach settle (see claimAuthorization in processTake).
  */
 export class WatchedFacilitator {
   private traces = new Map<string, SettleTrace & { at: number }>();
@@ -363,6 +363,25 @@ export interface TakeDeps {
     at: number,
   ) => Promise<{ ok: boolean; retryAfter: number }>;
   releasePaid: (payer: string, card: BoardCard, at: number) => Promise<void>;
+  /**
+   * Claims one signed authorization (by payer and nonce) until its deadline, across every
+   * isolate. false means another request already sent it to settle.
+   */
+  claimAuthorization: (key: string, untilMs: number) => Promise<boolean>;
+}
+
+/** The authorization's identity: payer plus EIP-3009 or Permit2 nonce (signature as a fallback). */
+export function authorizationKey(payload: PaymentPayload, payer: string): string {
+  const p = payload.payload as Record<string, unknown> | null;
+  const permit2 = p && typeof p === "object" && "permit2Authorization" in p;
+  const nonce = permit2
+    ? (p?.permit2Authorization as { nonce?: unknown } | null)?.nonce
+    : (p?.authorization as { nonce?: unknown } | null)?.nonce;
+  const id =
+    typeof nonce === "string" || typeof nonce === "number"
+      ? String(nonce).toLowerCase()
+      : `sig:${String((p as { signature?: unknown } | null)?.signature ?? "")}`;
+  return `auth:${payer}:${permit2 ? "permit2" : "eip3009"}:${id}`;
 }
 
 function unknownOutcome(tx: string | null, payer: string, why: string): TakeResult {
@@ -514,6 +533,17 @@ export async function processTake(
       },
       retryAfter: commit.retryAfter,
     };
+  }
+
+  // One settle per signed authorization, ever. A replay of the same signature (a client
+  // retrying after its own timeout) must not get its own, possibly misleading, answer while
+  // the first one is still settling. The claim lasts until the authorization expires.
+  const firstSubmit = await deps.claimAuthorization(
+    authorizationKey(payload, payer),
+    Math.min(((deadline ?? 0) + 60) * 1000, deps.now() + 86_400_000),
+  );
+  if (!firstSubmit) {
+    return unknownOutcome(null, payer, "this payment was already submitted");
   }
 
   // 6. Settle. Only now does money move. Unless the result proves no money moved (see

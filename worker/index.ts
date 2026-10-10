@@ -275,6 +275,7 @@ app.post("/api/take", async (c) => {
         },
         commitPaid: (payer, card, at) => limiter(c.env).hitAll(paidQuotas(payer, card), at),
         releasePaid: (payer, card, at) => limiter(c.env).unhitAll(paidQuotas(payer, card), at),
+        claimAuthorization: (key, until) => limiter(c.env).claim(key, until),
       },
       read.value,
       c.req.header("PAYMENT-SIGNATURE") ?? c.req.header("X-PAYMENT") ?? null,
