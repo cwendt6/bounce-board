@@ -14,6 +14,7 @@ import {
   dexscreenerUrl,
   formatDuration,
   initials,
+  listingNotice,
   shortAddress,
   splitLabel,
 } from "./format";
@@ -281,6 +282,9 @@ function holderRow(holder: CardView, extra: Child[] = []): HTMLLIElement {
     h("div", { class: "row-main" }, h("span", { class: "name" }, boxLabel(holder)), ...extra),
     h("div", { class: "desc" }, holder.description),
     h("div", { class: "meta" }, ...meta),
+    listingNotice(holder)
+      ? h("div", { class: "disclaimer" }, listingNotice(holder) as string)
+      : null,
   );
 }
 
@@ -380,10 +384,12 @@ function renderNowHolding(v: View, corners: number) {
     cur.endMs !== null
       ? `${formatDuration((cur.endMs - v.now) / 1000)} left in demo reign`
       : `held ${formatDuration((v.now - cur.startMs) / 1000)}`;
+  const notice = listingNotice(cur.card);
   el.replaceChildren(
     "Now holding: ",
     h("strong", {}, boxLabel(cur.card)),
     ` · ${timing}${corners ? ` · ◢ ${corners} corner${corners > 1 ? "s" : ""}` : ""}`,
+    ...(notice ? [h("span", { class: "disclaimer inline" }, notice)] : []),
   );
 }
 

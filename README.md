@@ -2,8 +2,10 @@
 
 One box bounces around a white screen. $1 in USDC puts your name, brand or token in the box. You hold it until the next buyer in the queue takes over. Hit a corner and you join the Corner Club.
 
-**Live (testnet, no real money yet):** https://bounce-board.colewendt6.workers.dev
+**Live (testnet, no real money yet):** https://bouncebox.xyz
 **Static demo:** https://cwendt6.github.io/bounce-board/ (invented holders, no server)
+
+Every card is a paid placement, not an endorsement and not financial advice. See the [terms](https://bouncebox.xyz/terms.html) and [privacy policy](https://bouncebox.xyz/privacy.html).
 
 ![Bounce Board on desktop](docs/screenshots/desktop.jpg)
 
@@ -29,6 +31,8 @@ npm run lint && npm run typecheck
 npx wrangler login                                  # once
 npm run build && npx wrangler deploy                # set CLOUDFLARE_ACCOUNT_ID in your env
 ```
+
+`wrangler.jsonc` routes bouncebox.xyz and www.bouncebox.xyz to the Worker as custom domains (the zone is on the same Cloudflare account, so the DNS records are created on deploy).
 
 For local testing, create `.dev.vars`:
 
