@@ -61,3 +61,11 @@ export function splitLabel(text: string): [string, string] | null {
   if (best < 0 || Math.min(best, t.length - best) < t.length * 0.3) best = Math.ceil(mid);
   return [t.slice(0, best).trim(), t.slice(best).trim()];
 }
+
+/** Shown on every token listing (spec: paid placement, not an endorsement, not financial advice). */
+export const PAID_PLACEMENT = "Paid placement. Not an endorsement. Not financial advice.";
+
+/** The notice for a listing, or null for plain brand cards (the page footer covers those). */
+export function listingNotice(card: { ticker?: string }): string | null {
+  return card.ticker ? PAID_PLACEMENT : null;
+}

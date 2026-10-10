@@ -4,6 +4,11 @@
   "main": "worker/index.ts",
   "compatibility_date": "2026-08-22",
   "compatibility_flags": ["nodejs_compat"],
+  // Public domain (registered on Cloudflare). Deploy creates the DNS records and certificates.
+  "routes": [
+    { "pattern": "bouncebox.xyz", "custom_domain": true },
+    { "pattern": "www.bouncebox.xyz", "custom_domain": true }
+  ],
   // The built site (npm run build) is served as static assets; /api/* goes to the Worker.
   "assets": { "directory": "./dist", "run_worker_first": ["/api/*"] },
   // Workers AI for moderation. Free plan: 10,000 neurons/day, errors (no charge) past that.

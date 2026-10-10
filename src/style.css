@@ -150,6 +150,19 @@ a:hover {
   min-height: 1.4em;
 }
 
+/* Paid-placement notice on every token listing. */
+.disclaimer {
+  grid-column: 2;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-style: italic;
+}
+
+.disclaimer.inline {
+  display: block;
+  margin-top: 2px;
+}
+
 .report-row {
   text-align: center;
   min-height: 1.4em;
@@ -494,6 +507,70 @@ img.logo {
   border: 1px solid var(--border);
   border-radius: 6px;
   cursor: pointer;
+}
+
+/* ---- Terms and privacy pages ---- */
+
+.doc {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+  line-height: 1.6;
+}
+
+.doc h1 {
+  color: var(--orange);
+  font-size: 32px;
+  margin: 8px 0 4px;
+}
+
+.doc h2 {
+  color: var(--orange);
+  font-size: 18px;
+  margin: 28px 0 6px;
+}
+
+.doc h3 {
+  font-size: 16px;
+  margin: 18px 0 4px;
+}
+
+.doc p,
+.doc li {
+  color: var(--text);
+}
+
+.doc ul,
+.doc ol {
+  padding-left: 22px;
+}
+
+.doc code {
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+
+.doc-back {
+  font-size: 14px;
+}
+
+.doc table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 14px;
+}
+
+.doc th,
+.doc td {
+  text-align: left;
+  vertical-align: top;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.foot-links {
+  margin-top: 6px;
 }
 
 /* ---- Admin page ---- */

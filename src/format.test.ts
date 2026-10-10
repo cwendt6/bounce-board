@@ -29,7 +29,7 @@ describe("format", () => {
   });
 });
 
-import { splitLabel } from "./format";
+import { listingNotice, PAID_PLACEMENT, splitLabel } from "./format";
 
 describe("splitLabel", () => {
   it("splits on the most balanced space", () => {
@@ -46,5 +46,16 @@ describe("splitLabel", () => {
 
   it("leaves short labels alone", () => {
     expect(splitLabel("$GO")).toBeNull();
+  });
+});
+
+describe("listingNotice", () => {
+  it("labels every token listing as a paid placement", () => {
+    expect(listingNotice({ ticker: "DEGEN" })).toBe(PAID_PLACEMENT);
+    expect(PAID_PLACEMENT).toMatch(/Paid placement.*Not an endorsement.*Not financial advice/);
+  });
+
+  it("leaves plain brand cards to the page footer", () => {
+    expect(listingNotice({})).toBeNull();
   });
 });
