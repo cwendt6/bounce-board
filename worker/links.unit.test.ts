@@ -71,4 +71,21 @@ describe("link checks", () => {
     expect(registrableDomain("a.b.metamsk.io.")).toBe("metamsk.io");
     expect(registrableDomain("example.com")).toBe("example.com");
   });
+  it("treats shared hosting as a public suffix, so the attacker's label is checked", () => {
+    expect(checkLink("https://metamask.pages.dev/", list).ok).toBe(false);
+    expect(checkLink("https://metamsk.vercel.app/", list).ok).toBe(false);
+    expect(checkLink("https://coffee-shop.pages.dev/", list)).toEqual({ ok: true });
+    expect(registrableDomain("a.metamask.github.io")).toBe("metamask.github.io");
+  });
+
+  it("does not block a brand whose fuzzylist entry has a subdomain", () => {
+    const withSub: PhishingLookup = {
+      ...list,
+      isWhitelisted: () => false,
+      fuzzylist: () => ({ entries: ["app.uniswap.org"], tolerance: 1 }),
+    };
+    expect(checkLink("https://app.uniswap.org/swap", withSub)).toEqual({ ok: true });
+    expect(checkLink("https://uniswap.org/", withSub)).toEqual({ ok: true });
+    expect(checkLink("https://unisvap.org/", withSub).ok).toBe(false);
+  });
 });

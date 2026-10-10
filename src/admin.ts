@@ -10,6 +10,7 @@ const $ = (id: string) => document.getElementById(id) as HTMLElement;
 let token = "";
 /** The holder the admin is looking at; the kill switch only removes this one. */
 let currentId: string | null = null;
+let currentLabel = "";
 try {
   token = sessionStorage.getItem("bb-admin") ?? "";
 } catch {
@@ -34,7 +35,9 @@ async function api(path: string, init: RequestInit = {}) {
   if (res.status === 401) throw new Error("Wrong admin token.");
   if (res.status === 409) {
     await refresh();
-    throw new Error("The holder changed before the kill. Check the new holder and try again.");
+    throw new Error(
+      "The holder changed before your kill, so nothing was removed. The page now shows the new holder.",
+    );
   }
   if (!res.ok) throw new Error(`Request failed (${res.status}).`);
   return res.json();
@@ -73,6 +76,7 @@ async function refresh() {
   currentId = state.current?.id ?? null;
   const label = (c: { name: string; ticker?: string }) =>
     c.ticker ? `$${c.ticker} (${c.name})` : c.name;
+  currentLabel = state.current ? label(state.current.card) : "";
   $("current").textContent = state.current
     ? `${label(state.current.card)} · ${state.current.card.link}`
     : "Empty";
@@ -135,7 +139,11 @@ $("token-form").addEventListener("submit", (e) => {
 
 $("kill").addEventListener("click", async () => {
   const reason = ($("kill-reason") as HTMLInputElement).value || "removed by admin";
-  if (!confirm(`Remove the current holder now? Reason: ${reason}`)) return;
+  if (!currentId) {
+    say("Nobody is holding the box.", true);
+    return;
+  }
+  if (!confirm(`Remove ${currentLabel} now? Reason: ${reason}`)) return;
   try {
     if (!currentId) {
       say("Nobody is holding the box.", true);

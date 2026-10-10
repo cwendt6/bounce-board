@@ -35,7 +35,10 @@ Every viewer must see the box in the same place, and the server must agree on co
 3. **Verify, check, settle.** The server runs these steps in order:
    - Verify the payment with the facilitator. This is free and moves no money.
    - Use the facilitator's verified payer (which covers EIP-3009 and Permit2) for the self-payment check and the wallet and listing rate limits.
-   - Run the token checks and moderation.
+   - Peek at the wallet and listing limits without counting them.
+   - Run the token checks (8 s timeout) and moderation (20 s timeout).
+   - Count the limits.
+   - Refuse with "sign again" if the signature expires within 15 seconds.
    - Only then settle.
 
    Any refusal before settlement says "You have not been charged". After settlement the server writes the sale and queues the takeover in one SQLite transaction. The answer is `201` with the tx hash, the snapshot and a `PAYMENT-RESPONSE` header.
@@ -60,23 +63,26 @@ Exact fixed-window counters in one SQLite Durable Object (`worker/limiter.ts`, `
 | --- | --- | --- |
 | Take attempts per IP (IPv6 by /64) | 20 per 10 min | Quote and payment spam |
 | Uncached AI moderation runs, account-wide | 180 per day (`AI_DAILY_CAP`) | Keeps Workers AI inside the free 10,000 neurons; past it, moderation is "unavailable" and nobody is charged |
+| Uncached AI moderation runs per verified payer | 5 per day | Stops one funded wallet from draining the shared AI budget with verified-but-never-settled attempts |
+| Uncached AI moderation runs per IP bucket | 10 per day | Same, across wallets from one place |
 | Paid takeovers per wallet | 10 per hour | Spam control |
 | Paid takeovers per listing (holder key) | 3 per hour | Nobody walls off the board with one card |
 | Reports per IP | 10 per hour | Report flooding |
 
-IPs are SHA-256 hashed before they're used as keys. IPv6 addresses are grouped by /64, because one client usually controls a whole /64. Wallet and listing limits use the facilitator-verified payer and run after verify and before settle, so forged headers can't burn anyone else's quota, and a refused attempt is never charged. Over-limit requests get `429` with `Retry-After`. Request bodies are capped before parsing (about 900 KB for takes, 4 KB for reports and admin calls).
+IPs are SHA-256 hashed before they're used as keys. IPv6 addresses are grouped by /64, because one client usually controls a whole /64. Wallet and listing limits use the facilitator-verified payer. They're peeked at before the slow checks and only counted right before settle, so forged headers and refused attempts (fake token, flagged content, outages) can't burn anyone's quota, and a refused attempt is never charged. The AI quotas and the global cap are counted together, all or nothing, on each uncached moderation run. Over-limit requests get `429` with `Retry-After`. Request bodies are capped before parsing (about 900 KB for takes, 4 KB for reports and admin calls).
 
 ## Reports and admin
 
 - **Report:** `POST /api/report {id, category, note}` (category: scam, nsfw, impersonation, hate, other; note up to 200 characters). There's a "Report this listing" button under the screen and a "report" link on each queued card. Reporters are stored only as SHA-256(IP + takeover id), so one person's repeat reports count once and no raw IPs are kept.
 - **Admin:** `/admin.html` (unlinked, `noindex`). Paste the admin token; it's kept in sessionStorage for that tab only. It shows the current holder, the queue and reports grouped by listing.
-  - `POST /api/admin/kill {reason}` removes the current holder now. The next queued buyer takes over immediately (starting now, not at their earlier payment time). If nobody is queued, the previous holder's card returns as a "restored" reign, which isn't counted in stats.
+  - `POST /api/admin/kill {id, reason}` removes the current holder now. `id` must be the current holder's id (from `/api/state`). If the board has moved on, the answer is `409` and nothing changes. The next queued buyer takes over immediately (starting now, not at their earlier payment time). If nobody is queued, the previous genuine holder's card returns as a "restored" reign, which isn't counted in stats. Killing a restored reign also removes the reign it came from, so the same content can't come back.
   - `POST /api/admin/remove {id, reason}` removes a queued (or the current) listing.
   - Removed listings are kept, with their reason, for the record, but drop off the recent list, leaderboards and stats.
 - **Auth:** every `/api/admin/*` route needs `Authorization: Bearer <ADMIN_TOKEN>` and returns 404 until the token is set.
 
 ## Link checks
 
+- **Shared hosting:** hosts like `pages.dev`, `vercel.app` and `github.io` (see `HOSTING_SUFFIXES`) count as public suffixes, so for `metamask.pages.dev` the attacker-controlled label is the one compared.
 - **Card link** (`worker/links.ts`): blocked if the domain or any parent domain is on MetaMask's open-source phishing list (eth-phishing-detect, about 100k domains) and not whitelisted. It is also blocked if it's a one-edit look-alike of a protected brand from that list's fuzzy list (for example `metamsk.io`), a bare IP address, or a punycode (`xn--`) look-alike.
 - **Descriptions:** may not contain links or domains at all, so no wallet-connect links. The link field is the only place for a URL.
 - **Storage:** the list lives in its own Durable Object (`PhishingListStore`) as a few large text chunks plus one JSON info row. Lookups use an in-memory Set built from the chunks. A refresh writes about 5 rows, and nothing when the content hash is unchanged. A daily cron refreshes it, and it loads on first use. A refresh that looks wrong (fewer than 1,000 domains) keeps the old copy. If the list can't load, only the cheap rules apply.

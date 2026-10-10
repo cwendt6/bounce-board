@@ -23,6 +23,10 @@ export const RULES = {
   paidPerWallet: { limit: 10, windowMs: 60 * 60_000 },
   /** The same listing (holder key) at most this often. */
   paidPerCard: { limit: 3, windowMs: 60 * 60_000 },
+  /** Uncached AI moderation runs per verified payer (wallet), per day. */
+  aiPerPayer: { limit: 5, windowMs: 86_400_000 },
+  /** Uncached AI moderation runs per IP bucket, per day. */
+  aiPerIp: { limit: 10, windowMs: 86_400_000 },
   /** Reports per IP. */
   reportPerIp: { limit: 10, windowMs: 60 * 60_000 },
 } satisfies Record<string, Rule>;
@@ -64,6 +68,37 @@ export class RateLimiter extends DurableObject<Env> {
     this.sql.exec(
       "CREATE TABLE IF NOT EXISTS hits (key TEXT NOT NULL, win INTEGER NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (key, win))",
     );
+  }
+
+  private count(key: string, win: number): number {
+    return (
+      this.sql
+        .exec<{ n: number }>("SELECT n FROM hits WHERE key = ? AND win = ?", key, win)
+        .toArray()[0]?.n ?? 0
+    );
+  }
+
+  /** Would one more hit fit? Counts nothing. */
+  peek(key: string, rule: Rule, now = Date.now()): LimitResult {
+    const win = windowStart(now, rule.windowMs);
+    if (this.count(key, win) >= rule.limit) {
+      return { ok: false, retryAfter: Math.ceil((win + rule.windowMs - now) / 1000) };
+    }
+    return { ok: true, retryAfter: 0 };
+  }
+
+  /**
+   * Count one hit on every key, but only if every key has room (all or nothing). Returns the
+   * first refusal otherwise. Used where several limits guard one action (for example a
+   * wallet, a listing, or several AI quotas).
+   */
+  hitAll(entries: { key: string; rule: Rule }[], now = Date.now()): LimitResult {
+    for (const e of entries) {
+      const r = this.peek(e.key, e.rule, now);
+      if (!r.ok) return r;
+    }
+    for (const e of entries) this.hit(e.key, e.rule, now);
+    return { ok: true, retryAfter: 0 };
   }
 
   /** Count one hit for `key`; refuses (without counting) once the window is full. */

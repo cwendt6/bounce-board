@@ -106,6 +106,17 @@ describe("logos", () => {
     expect(parseLogo(`data:image/webp;base64,${b64(vp8l(4096, 4096))}`).ok).toBe(false);
   });
 
+  it("can't be fooled by JPEG fill bytes hiding the real frame size", () => {
+    // SOI, then FF FF FF before an SOF0 marker declaring 4000x4000.
+    const sof = [0xff, 0xff, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x0f, 0xa0, 0x0f, 0xa0, 0x03];
+    const jpeg = [0xff, 0xd8, ...sof, ...Array(20).fill(0)];
+    expect(dimensions(Uint8Array.from(jpeg), "image/jpeg")).toEqual({ width: 4000, height: 4000 });
+    expect(parseLogo(`data:image/jpeg;base64,${b64(jpeg)}`).ok).toBe(false);
+    // FF 00 is not a marker: fail closed.
+    const odd = [0xff, 0xd8, 0xff, 0x00, ...Array(20).fill(0)];
+    expect(dimensions(Uint8Array.from(odd), "image/jpeg")).toBeNull();
+  });
+
   it("refuses an image whose size can't be read", () => {
     const truncated = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13];
     expect(parseLogo(`data:image/png;base64,${b64(truncated)}`).ok).toBe(false);

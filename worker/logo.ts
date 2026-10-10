@@ -49,7 +49,11 @@ export function dimensions(
     let i = 2;
     while (i + 9 < b.length) {
       if (b[i] !== 0xff) return null;
+      // Skip 0xFF fill bytes before a marker, as decoders do (otherwise a crafted file could
+      // hide its real frame size from this scan).
+      while (b[i + 1] === 0xff && i + 10 < b.length) i++;
       const marker = b[i + 1];
+      if (marker === 0x00) return null;
       if (marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) {
         i += 2;
         continue;

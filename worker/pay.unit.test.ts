@@ -70,8 +70,8 @@ function deps(
     now: () => 1_790_000_000_000,
     newId: () => "sale-1",
     decodePayment: () => ({ x402Version: 2, accepted: req, payload: {}, ...payload }),
-    moderate: async () => {
-      ran.push("moderate");
+    moderate: async (_card, _logo, payer) => {
+      ran.push(`moderate:${payer}`);
       return { ok: true };
     },
     checkToken: async () => {
@@ -82,8 +82,13 @@ function deps(
       ran.push("link");
       return { ok: true };
     },
-    limitPaid: async (payer) => {
-      ran.push("limit");
+    peekPaid: async (payer) => {
+      ran.push("peek");
+      limitedPayer.push(payer);
+      return { ok: true, retryAfter: 0 };
+    },
+    commitPaid: async (payer) => {
+      ran.push("commit");
       limitedPayer.push(payer);
       return { ok: true, retryAfter: 0 };
     },
@@ -128,7 +133,7 @@ describe("processTake", () => {
     const d = deps(g);
     const r = await processTake(d, card, "x", "u");
     expect(r.status).toBe(201);
-    expect(d.ran).toEqual(["link", "limit", "token", "moderate"]);
+    expect(d.ran).toEqual(["link", "peek", "token", "moderate:0xbuyer", "commit"]);
     expect(g.calls).toEqual(["requirements", "verify", "settle"]);
   });
 
@@ -136,7 +141,7 @@ describe("processTake", () => {
     const g = fake();
     const d = deps(g, { payload: { authorization: { from: "0xvictim" } } });
     await processTake(d, card, "x", "u");
-    expect(d.limitedPayer).toEqual(["0xbuyer"]);
+    expect(d.limitedPayer).toEqual(["0xbuyer", "0xbuyer"]);
   });
 
   it("never counts limits for a payment that fails verification", async () => {
@@ -144,13 +149,14 @@ describe("processTake", () => {
     const d = deps(g, { payload: { authorization: { from: "0xvictim" } } });
     const r = await processTake(d, card, "x", "u");
     expect(r.status).toBe(402);
-    expect(d.ran).not.toContain("limit");
+    expect(d.ran).not.toContain("peek");
+    expect(d.ran).not.toContain("commit");
     expect(g.calls).not.toContain("settle");
   });
 
   it("refuses a wallet over its limit after verify and before settle", async () => {
     const g = fake();
-    const d = { ...deps(g), limitPaid: async () => ({ ok: false, retryAfter: 120 }) };
+    const d = { ...deps(g), peekPaid: async () => ({ ok: false, retryAfter: 120 }) };
     const r = await processTake(d, card, "x", "u");
     expect(r.status).toBe(429);
     expect(r.status === 429 && r.retryAfter).toBe(120);
@@ -171,7 +177,8 @@ describe("processTake", () => {
     );
     expect(r.status).toBe(400);
     expect(r.status === 400 && r.body.errors[0]).toMatch(/token check: .*copy.*not been charged/);
-    expect(d.ran).not.toContain("moderate");
+    expect(d.ran.some((x) => x.startsWith("moderate"))).toBe(false);
+    expect(d.ran).not.toContain("commit");
     expect(g.calls).not.toContain("settle");
   });
 
@@ -200,6 +207,37 @@ describe("processTake", () => {
     const r = await processTake(d, card, "x", "u");
     expect(r.status).toBe(400);
     expect(r.status === 400 && r.body.errors[0]).toMatch(/hate.*not been charged/);
+    expect(g.calls).not.toContain("settle");
+  });
+
+  it("never counts limits for attempts refused by token checks or moderation", async () => {
+    for (const over of [
+      { checkToken: async () => ({ ok: false as const, reason: "copy" }) },
+      { moderate: async () => ({ ok: false as const, reason: "flagged" }) },
+      { moderate: async () => ({ ok: "unavailable" as const }) },
+    ]) {
+      const g = fake();
+      const d = deps(g);
+      await processTake({ ...d, ...over }, card, "x", "u");
+      expect(d.ran).not.toContain("commit");
+    }
+  });
+
+  it("refuses, uncharged, if another request took the last slot before settle", async () => {
+    const g = fake();
+    const d = { ...deps(g), commitPaid: async () => ({ ok: false, retryAfter: 60 }) };
+    const r = await processTake(d, card, "x", "u");
+    expect(r.status).toBe(429);
+    expect(g.calls).not.toContain("settle");
+  });
+
+  it("refuses to settle a signature that is about to expire", async () => {
+    const g = fake();
+    const nowSec = 1_790_000_000;
+    const d = deps(g, { payload: { authorization: { validBefore: String(nowSec + 5) } } });
+    const r = await processTake(d, card, "x", "u");
+    expect(r.status).toBe(402);
+    expect(r.status === 402 && r.body.error).toMatch(/expired.*not been charged/);
     expect(g.calls).not.toContain("settle");
   });
 

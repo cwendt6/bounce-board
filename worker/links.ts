@@ -36,12 +36,45 @@ export function domainChain(host: string): string[] {
 }
 
 /**
- * The registrable domain, approximated as the last two labels. Good enough for brand
- * look-alike checks; multi-part suffixes like co.uk aren't handled.
+ * Shared hosting where anyone can get a subdomain. These act as public suffixes, so for
+ * metamask.pages.dev the part an attacker controls ("metamask") is what gets checked.
+ */
+export const HOSTING_SUFFIXES = new Set([
+  "pages.dev",
+  "workers.dev",
+  "vercel.app",
+  "netlify.app",
+  "github.io",
+  "gitlab.io",
+  "web.app",
+  "firebaseapp.com",
+  "herokuapp.com",
+  "onrender.com",
+  "fly.dev",
+  "glitch.me",
+  "replit.app",
+  "surge.sh",
+  "azurewebsites.net",
+  "blogspot.com",
+  "wixsite.com",
+  "weebly.com",
+  "webflow.io",
+  "framer.website",
+  "ipfs.io",
+  "co.uk",
+  "com.au",
+  "co.jp",
+  "com.br",
+]);
+
+/**
+ * The registrable domain: the last two labels, or three under a known shared suffix
+ * (see HOSTING_SUFFIXES). Good enough for brand look-alike checks.
  */
 export function registrableDomain(host: string): string {
   const parts = host.toLowerCase().replace(/\.+$/, "").split(".");
-  return parts.slice(-2).join(".");
+  const lastTwo = parts.slice(-2).join(".");
+  return HOSTING_SUFFIXES.has(lastTwo) && parts.length > 2 ? parts.slice(-3).join(".") : lastTwo;
 }
 
 export function levenshtein(a: string, b: string, max = Number.POSITIVE_INFINITY): number {
@@ -86,8 +119,9 @@ export function checkLink(link: string, list: PhishingLookup | null): LinkCheck 
   const label = registrable.split(".")[0];
   const { entries, tolerance } = list.fuzzylist();
   for (const brand of entries) {
-    if (registrable === brand) continue;
-    const brandLabel = registrableDomain(brand).split(".")[0];
+    const brandDomain = registrableDomain(brand);
+    if (registrable === brandDomain) continue;
+    const brandLabel = brandDomain.split(".")[0];
     if (levenshtein(label, brandLabel, tolerance) <= tolerance) {
       return { ok: false, reason: `link: looks like an imitation of ${brand}` };
     }

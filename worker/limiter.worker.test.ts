@@ -40,6 +40,33 @@ describe("route limits", () => {
   });
 });
 
+describe("peek and hitAll", () => {
+  it("peek counts nothing", async () => {
+    const l = limiter("peek");
+    const t = Date.UTC(2026, 9, 1, 12, 0, 0);
+    for (let i = 0; i < 5; i++) expect((await l.peek("k", rule, t)).ok).toBe(true);
+    for (let i = 0; i < 3; i++) await l.hit("k", rule, t);
+    expect((await l.peek("k", rule, t)).ok).toBe(false);
+  });
+
+  it("hitAll counts every key or none", async () => {
+    const l = limiter("hitall");
+    const t = Date.UTC(2026, 9, 1, 12, 0, 0);
+    for (let i = 0; i < 3; i++) await l.hit("full", rule, t);
+    const r = await l.hitAll(
+      [
+        { key: "free", rule },
+        { key: "full", rule },
+      ],
+      t,
+    );
+    expect(r.ok).toBe(false);
+    // "free" was not counted, so it still has all 3 slots.
+    for (let i = 0; i < 3; i++) expect((await l.hit("free", rule, t)).ok).toBe(true);
+    expect((await l.hit("free", rule, t)).ok).toBe(false);
+  });
+});
+
 describe("ipBucket", () => {
   it("keeps IPv4 addresses whole", () => {
     expect(ipBucket("203.0.113.7")).toBe("203.0.113.7");

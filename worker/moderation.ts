@@ -83,6 +83,18 @@ export function parseImageAnswer(text: unknown): Verdict {
   return { ok: "unavailable" };
 }
 
+/** A hung model call must not outlive the buyer's short-lived payment signature. */
+export const AI_TIMEOUT_MS = 20_000;
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`AI timed out after ${ms} ms`)), ms),
+    ),
+  ]);
+}
+
 const TEXT_MODEL = "@cf/meta/llama-guard-3-8b";
 const IMAGE_MODEL = "@cf/mistralai/mistral-small-3.1-24b-instruct";
 
@@ -100,29 +112,32 @@ export class WorkersAiModerator implements Moderator {
       ? `data:${logo.mime};base64,${Buffer.from(logo.bytes).toString("base64")}`
       : null;
     try {
-      const [text, image] = await Promise.all([
-        this.ai.run(TEXT_MODEL, {
-          messages: [{ role: "user", content: cardText(card) }],
-          response_format: { type: "json_object" },
-          temperature: 0,
-          max_tokens: 32,
-        }),
-        logoDataUrl
-          ? this.ai.run(IMAGE_MODEL, {
-              messages: [
-                {
-                  role: "user",
-                  content: [
-                    { type: "text", text: IMAGE_PROMPT },
-                    { type: "image_url", image_url: { url: logoDataUrl } },
-                  ],
-                },
-              ],
-              temperature: 0,
-              max_tokens: 4,
-            })
-          : Promise.resolve(null),
-      ]);
+      const [text, image] = await withTimeout(
+        Promise.all([
+          this.ai.run(TEXT_MODEL, {
+            messages: [{ role: "user", content: cardText(card) }],
+            response_format: { type: "json_object" },
+            temperature: 0,
+            max_tokens: 32,
+          }),
+          logoDataUrl
+            ? this.ai.run(IMAGE_MODEL, {
+                messages: [
+                  {
+                    role: "user",
+                    content: [
+                      { type: "text", text: IMAGE_PROMPT },
+                      { type: "image_url", image_url: { url: logoDataUrl } },
+                    ],
+                  },
+                ],
+                temperature: 0,
+                max_tokens: 4,
+              })
+            : Promise.resolve(null),
+        ]),
+        AI_TIMEOUT_MS,
+      );
       const t = parseGuard((text as { response?: unknown } | null)?.response);
       if (t.ok !== true) return t;
       if (!logoDataUrl) return t;

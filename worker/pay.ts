@@ -138,14 +138,19 @@ export interface TakeDeps {
   now: () => number;
   newId: () => string;
   decodePayment: (header: string) => PaymentPayload;
-  /** Moderation for the card and its logo (null if none). */
-  moderate: (card: BoardCard, logo: Logo | null) => Promise<Verdict>;
+  /** Moderation for the card and its logo (null if none), charged to the verified payer. */
+  moderate: (card: BoardCard, logo: Logo | null, payer: string) => Promise<Verdict>;
   /** DexScreener checks for token cards. */
   checkToken: (card: BoardCard) => Promise<TokenCheck>;
   /** Phishing and look-alike checks on the card's link. */
   checkLink: (link: string) => Promise<LinkCheck>;
-  /** Per-wallet and per-card limits on paid takeovers; checked before verify. */
-  limitPaid: (payer: string, card: BoardCard) => Promise<{ ok: boolean; retryAfter: number }>;
+  /**
+   * Per-wallet and per-listing limits on paid takeovers. `peekPaid` checks without counting
+   * (before the slow checks); `commitPaid` counts, right before settle, so attempts that are
+   * refused (fake token, flagged content, outages) can't burn anyone's quota.
+   */
+  peekPaid: (payer: string, card: BoardCard) => Promise<{ ok: boolean; retryAfter: number }>;
+  commitPaid: (payer: string, card: BoardCard) => Promise<{ ok: boolean; retryAfter: number }>;
 }
 
 /**
@@ -214,8 +219,8 @@ export async function processTake(
   }
 
   // 3. Limits on the verified payer, so nobody can burn another wallet's or listing's quota
-  //    with forged headers.
-  const lim = await deps.limitPaid(payer, card.card);
+  //    with forged headers. Peek only: nothing is counted until the checks below pass.
+  const lim = await deps.peekPaid(payer, card.card);
   if (!lim.ok) {
     return {
       status: 429,
@@ -239,7 +244,7 @@ export async function processTake(
     return { status: 400, body: { errors: [`token check: ${tok.reason}. ${notCharged}`] } };
   }
 
-  const verdict = await deps.moderate(card.card, logo.logo);
+  const verdict = await deps.moderate(card.card, logo.logo, payer);
   if (verdict.ok === "unavailable") {
     return {
       status: 503,
@@ -250,7 +255,30 @@ export async function processTake(
     return { status: 400, body: { errors: [`rejected: ${verdict.reason}. ${notCharged}`] } };
   }
 
-  // 5. Settle. Only now does money move.
+  // 5. Count the limits now that every check passed (refused if another request got there).
+  const commit = await deps.commitPaid(payer, card.card);
+  if (!commit.ok) {
+    return {
+      status: 429,
+      body: {
+        error: `Too many takeovers from this wallet or for this listing. Try again later. ${notCharged}`,
+      },
+      retryAfter: commit.retryAfter,
+    };
+  }
+
+  // The signed authorization expires (validBefore). Don't start a settle that can't finish.
+  const validBefore = Number(
+    (payload.payload as { authorization?: { validBefore?: string } })?.authorization?.validBefore,
+  );
+  if (Number.isFinite(validBefore) && validBefore * 1000 - deps.now() < 15_000) {
+    return {
+      status: 402,
+      body: { ...required, error: `Your payment signature expired. Sign again. ${notCharged}` },
+    };
+  }
+
+  // 6. Settle. Only now does money move.
   const s = await deps.gateway.settle(payload, req);
   if (!s.success || !s.transaction) {
     return {

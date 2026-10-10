@@ -133,7 +133,9 @@ app.post("/api/dev/take", async (c) => {
       ? c.json({ error: "Token checks are unavailable right now." }, 503)
       : c.json({ errors: [`token check: ${tok.reason}`] }, 400);
   }
-  const verdict = await moderate(c.env, result.card, logo.logo);
+  const verdict = await moderate(c.env, result.card, logo.logo, [
+    { key: `ai:${await ipKey(c)}`, rule: RULES.aiPerIp },
+  ]);
   if (verdict.ok === "unavailable")
     return c.json({ error: "Moderation is unavailable right now." }, 503);
   if (!verdict.ok) return c.json({ errors: [`rejected: ${verdict.reason}`] }, 400);
@@ -151,11 +153,17 @@ function moderator(env: Env): Moderator {
 }
 
 /**
- * Moderate with a 24 h verdict cache in the Durable Object. Uncached runs count against a
- * global daily cap that keeps Workers AI inside its free allowance; past the cap, moderation is
+ * Moderate with a 24 h verdict cache in the Durable Object. An uncached run counts, all or
+ * nothing, against the caller's quotas (per verified payer and per IP bucket) and a global
+ * daily cap that keeps Workers AI inside its free allowance. Past any of them, moderation is
  * "unavailable" (the buyer is asked to retry, uncharged). "Unavailable" is never cached.
  */
-async function moderate(env: Env, card: BoardCard, logo: Logo | null): Promise<Verdict> {
+async function moderate(
+  env: Env,
+  card: BoardCard,
+  logo: Logo | null,
+  actorQuotas: { key: string; rule: Rule }[],
+): Promise<Verdict> {
   const key = await verdictKey(card, logo);
   const b = board(env);
   const cached = await b.verdict(key);
@@ -163,7 +171,10 @@ async function moderate(env: Env, card: BoardCard, logo: Logo | null): Promise<V
     return cached.ok ? { ok: true } : { ok: false, reason: cached.reason ?? "content flagged" };
   if (env.MODERATION !== "off") {
     const cap = Number(env.AI_DAILY_CAP ?? DEFAULT_AI_DAILY_CAP) || DEFAULT_AI_DAILY_CAP;
-    const budget = await limiter(env).hit("ai:global", aiDailyRule(cap));
+    const budget = await limiter(env).hitAll([
+      ...actorQuotas,
+      { key: "ai:global", rule: aiDailyRule(cap) },
+    ]);
     if (!budget.ok) return { ok: "unavailable" };
   }
   const v = await moderator(env).check(card, logo);
@@ -191,8 +202,12 @@ async function tokenCheck(env: Env, card: BoardCard): Promise<TokenCheck> {
   const b = board(env);
   const cached = await b.tokenCheck(key);
   if (cached) return JSON.parse(cached) as TokenCheck;
+  // A timeout counts as "unavailable": the buyer's payment signature is only valid briefly.
   const r = await checkToken(card, (url) =>
-    fetch(url, { headers: { Accept: "application/json", "User-Agent": "bounce-board" } }),
+    fetch(url, {
+      headers: { Accept: "application/json", "User-Agent": "bounce-board" },
+      signal: AbortSignal.timeout(8_000),
+    }),
   );
   if (!(!r.ok && r.unavailable)) await b.saveTokenCheck(key, JSON.stringify(r));
   return r;
@@ -234,15 +249,23 @@ app.post("/api/take", async (c) => {
         now: () => Date.now(),
         newId: () => crypto.randomUUID(),
         decodePayment: decodePaymentSignatureHeader,
-        moderate: (card, logo) => moderate(c.env, card, logo),
+        moderate: async (card, logo, payer) =>
+          moderate(c.env, card, logo, [
+            { key: `ai:wallet:${payer}`, rule: RULES.aiPerPayer },
+            { key: `ai:${await ipKey(c)}`, rule: RULES.aiPerIp },
+          ]),
         checkToken: (card) => tokenCheck(c.env, card),
         checkLink: (link) => linkCheck(c.env, link),
-        limitPaid: async (payer, card) => {
+        peekPaid: async (payer, card) => {
           const l = limiter(c.env);
-          const w = await l.hit(`wallet:${payer}`, RULES.paidPerWallet);
-          if (!w.ok) return w;
-          return l.hit(`card:${holderKey(card)}`, RULES.paidPerCard);
+          const w = await l.peek(`wallet:${payer}`, RULES.paidPerWallet);
+          return w.ok ? l.peek(`card:${holderKey(card)}`, RULES.paidPerCard) : w;
         },
+        commitPaid: (payer, card) =>
+          limiter(c.env).hitAll([
+            { key: `wallet:${payer}`, rule: RULES.paidPerWallet },
+            { key: `card:${holderKey(card)}`, rule: RULES.paidPerCard },
+          ]),
       },
       read.value,
       c.req.header("PAYMENT-SIGNATURE") ?? c.req.header("X-PAYMENT") ?? null,
@@ -285,7 +308,9 @@ app.get("/api/logo/:id", async (c) => {
   const id = c.req.param("id");
   if (!/^[0-9a-f-]{36}$/.test(id)) return c.notFound();
   const edge = typeof caches !== "undefined" ? caches.default : null;
-  const hit = edge ? await edge.match(c.req.raw) : undefined;
+  // Cache on the path alone, so query strings can't be used to bypass the edge cache.
+  const cacheKey = new Request(new URL(`/api/logo/${id}`, c.req.url).toString(), { method: "GET" });
+  const hit = edge ? await edge.match(cacheKey) : undefined;
   if (hit) return hit as unknown as Response;
   const logo = await board(c.env).logo(id);
   if (!logo) return c.notFound();
@@ -297,7 +322,7 @@ app.get("/api/logo/:id", async (c) => {
       "Cache-Control": "public, max-age=300",
     },
   });
-  if (edge) c.executionCtx.waitUntil(edge.put(c.req.raw, res.clone()));
+  if (edge) c.executionCtx.waitUntil(edge.put(cacheKey, res.clone()));
   return res;
 });
 
