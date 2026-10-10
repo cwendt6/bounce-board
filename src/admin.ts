@@ -8,6 +8,8 @@ import type { Snapshot } from "./sources";
 const API = `${import.meta.env.BASE_URL}api`;
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
 let token = "";
+/** The holder the admin is looking at; the kill switch only removes this one. */
+let currentId: string | null = null;
 try {
   token = sessionStorage.getItem("bb-admin") ?? "";
 } catch {
@@ -30,6 +32,10 @@ async function api(path: string, init: RequestInit = {}) {
     },
   });
   if (res.status === 401) throw new Error("Wrong admin token.");
+  if (res.status === 409) {
+    await refresh();
+    throw new Error("The holder changed before the kill. Check the new holder and try again.");
+  }
   if (!res.ok) throw new Error(`Request failed (${res.status}).`);
   return res.json();
 }
@@ -64,6 +70,7 @@ async function remove(id: string, label: string) {
 
 async function refresh() {
   const state = (await (await fetch(`${API}/state`)).json()) as Snapshot;
+  currentId = state.current?.id ?? null;
   const label = (c: { name: string; ticker?: string }) =>
     c.ticker ? `$${c.ticker} (${c.name})` : c.name;
   $("current").textContent = state.current
@@ -130,7 +137,11 @@ $("kill").addEventListener("click", async () => {
   const reason = ($("kill-reason") as HTMLInputElement).value || "removed by admin";
   if (!confirm(`Remove the current holder now? Reason: ${reason}`)) return;
   try {
-    await api("/admin/kill", { method: "POST", body: JSON.stringify({ reason }) });
+    if (!currentId) {
+      say("Nobody is holding the box.", true);
+      return;
+    }
+    await api("/admin/kill", { method: "POST", body: JSON.stringify({ id: currentId, reason }) });
     say("Current holder removed.");
     await refresh();
   } catch (e) {

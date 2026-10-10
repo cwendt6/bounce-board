@@ -35,6 +35,15 @@ export function domainChain(host: string): string[] {
   return out;
 }
 
+/**
+ * The registrable domain, approximated as the last two labels. Good enough for brand
+ * look-alike checks; multi-part suffixes like co.uk aren't handled.
+ */
+export function registrableDomain(host: string): string {
+  const parts = host.toLowerCase().replace(/\.+$/, "").split(".");
+  return parts.slice(-2).join(".");
+}
+
 export function levenshtein(a: string, b: string, max = Number.POSITIVE_INFINITY): number {
   if (Math.abs(a.length - b.length) > max) return max + 1;
   let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
@@ -56,7 +65,7 @@ const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
 export function checkLink(link: string, list: PhishingLookup | null): LinkCheck {
   let host: string;
   try {
-    host = new URL(link).hostname.toLowerCase();
+    host = new URL(link).hostname.toLowerCase().replace(/\.+$/, "");
   } catch {
     return { ok: false, reason: "link: not a valid URL" };
   }
@@ -70,10 +79,16 @@ export function checkLink(link: string, list: PhishingLookup | null): LinkCheck 
   if (list.isWhitelisted(chain)) return { ok: true };
   if (list.isBlacklisted(chain))
     return { ok: false, reason: "link: this domain is on a phishing blocklist" };
-  const bare = host.replace(/^www\./, "");
+  // Look-alikes: compare the registrable domain's main label (login.metamsk.io -> "metamsk")
+  // with each protected brand minus its TLD ("metamask"). Distance 0 counts too, so
+  // metamask.app is caught; the brand's own domain (and anything whitelisted) is allowed.
+  const registrable = registrableDomain(host);
+  const label = registrable.split(".")[0];
   const { entries, tolerance } = list.fuzzylist();
   for (const brand of entries) {
-    if (bare !== brand && levenshtein(bare, brand, tolerance) <= tolerance) {
+    if (registrable === brand) continue;
+    const brandLabel = registrableDomain(brand).split(".")[0];
+    if (levenshtein(label, brandLabel, tolerance) <= tolerance) {
       return { ok: false, reason: `link: looks like an imitation of ${brand}` };
     }
   }

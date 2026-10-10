@@ -5,6 +5,7 @@ import {
   domainChain,
   levenshtein,
   type PhishingLookup,
+  registrableDomain,
 } from "./links";
 
 const list: PhishingLookup = {
@@ -57,5 +58,17 @@ describe("link checks", () => {
     expect(checkDescription("Claim at https://example.com").ok).toBe(false);
     expect(checkDescription("connect at www.example.com").ok).toBe(false);
     expect(checkDescription("visit claim-airdrop.xyz now").ok).toBe(false);
+  });
+  it("catches look-alikes hidden in subdomains, trailing dots and other TLDs", () => {
+    expect(checkLink("https://login.metamsk.io/", list).ok).toBe(false);
+    expect(checkLink("https://metamsk.io./", list).ok).toBe(false);
+    expect(checkLink("https://metamask.app/", list).ok).toBe(false);
+    expect(checkLink("https://www.metamask.io/", list)).toEqual({ ok: true });
+    expect(checkLink("https://docs.example.com/", list)).toEqual({ ok: true });
+  });
+
+  it("reduces hosts to their registrable domain", () => {
+    expect(registrableDomain("a.b.metamsk.io.")).toBe("metamsk.io");
+    expect(registrableDomain("example.com")).toBe("example.com");
   });
 });

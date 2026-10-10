@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { MIN_HOLD_MS } from "../src/core/queue";
 import type { Snapshot } from "./board";
 import { validateCard } from "./card";
+import images from "./fixtures/canvas-images.json";
 import type { Sale } from "./pay";
 
 const card = (name: string) => {
@@ -96,11 +97,9 @@ describe("board API", () => {
   });
 
   it("stores an uploaded logo and serves it as an image only", async () => {
-    // Smallest valid-looking WebP header; the server checks magic bytes, not decodability.
-    const webp = Uint8Array.from([
-      0x52, 0x49, 0x46, 0x46, 4, 0, 0, 0, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50,
-    ]);
-    const logo = `data:image/webp;base64,${btoa(String.fromCharCode(...webp))}`;
+    // A real 256x256 WebP produced by Chrome's canvas encoder.
+    const logo = images.webp_256;
+    const webp = Uint8Array.from(atob(logo.split(",")[1]), (ch) => ch.charCodeAt(0));
     const res = await SELF.fetch("https://board.test/api/dev/take", {
       method: "POST",
       body: JSON.stringify({ name: "Logo Co", link: "https://example.com", logo }),
@@ -114,6 +113,7 @@ describe("board API", () => {
     expect(img.headers.get("Content-Type")).toBe("image/webp");
     expect(img.headers.get("X-Content-Type-Options")).toBe("nosniff");
     expect(img.headers.get("Content-Security-Policy")).toContain("default-src 'none'");
+    expect(img.headers.get("Cache-Control")).toBe("public, max-age=300");
     expect(new Uint8Array(await img.arrayBuffer())).toEqual(webp);
   });
 
@@ -178,5 +178,27 @@ describe("board API", () => {
     const ok = await SELF.fetch(url, { headers: { Authorization: "Bearer test-admin-token" } });
     expect(ok.status).toBe(200);
     expect((await ok.text()).split("\n")[0]).toMatch(/^id,takeover_id,network/);
+  });
+  it("refuses request bodies over the cap before parsing them", async () => {
+    const huge = JSON.stringify({
+      name: "Big",
+      link: "https://example.com",
+      logo: "x".repeat(1_000_000),
+    });
+    const take = await SELF.fetch("https://board.test/api/dev/take", {
+      method: "POST",
+      body: huge,
+    });
+    expect(take.status).toBe(413);
+    const report = await SELF.fetch("https://board.test/api/report", {
+      method: "POST",
+      headers: { "CF-Connecting-IP": "198.51.100.42" },
+      body: JSON.stringify({
+        id: "00000000-0000-4000-8000-000000000001",
+        category: "scam",
+        note: "y".repeat(5000),
+      }),
+    });
+    expect(report.status).toBe(413);
   });
 });

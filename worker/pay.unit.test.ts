@@ -45,7 +45,7 @@ function fake(over: Partial<Gateway> = {}): Gateway & { calls: string[] } {
     },
     async verify() {
       calls.push("verify");
-      return { ok: true };
+      return { ok: true, payer: "0xbuyer" };
     },
     async settle() {
       calls.push("settle");
@@ -55,17 +55,38 @@ function fake(over: Partial<Gateway> = {}): Gateway & { calls: string[] } {
   };
 }
 
-function deps(gateway: Gateway, payload: Partial<PaymentPayload> = {}): TakeDeps {
+/** Records which expensive checks ran. */
+function deps(
+  gateway: Gateway,
+  payload: Partial<PaymentPayload> = {},
+): TakeDeps & { ran: string[]; limitedPayer: string[] } {
+  const ran: string[] = [];
+  const limitedPayer: string[] = [];
   return {
+    ran,
+    limitedPayer,
     gateway,
     cfg,
     now: () => 1_790_000_000_000,
     newId: () => "sale-1",
     decodePayment: () => ({ x402Version: 2, accepted: req, payload: {}, ...payload }),
-    moderate: async () => ({ ok: true }),
-    checkToken: async () => ({ ok: true, status: "verified" }),
-    checkLink: async () => ({ ok: true }),
-    limitPaid: async () => ({ ok: true, retryAfter: 0 }),
+    moderate: async () => {
+      ran.push("moderate");
+      return { ok: true };
+    },
+    checkToken: async () => {
+      ran.push("token");
+      return { ok: true };
+    },
+    checkLink: async () => {
+      ran.push("link");
+      return { ok: true };
+    },
+    limitPaid: async (payer) => {
+      ran.push("limit");
+      limitedPayer.push(payer);
+      return { ok: true, retryAfter: 0 };
+    },
   };
 }
 
@@ -77,55 +98,109 @@ describe("processTake", () => {
     expect(g.calls).toEqual([]);
   });
 
-  it("rejects a phishing link before any other check", async () => {
+  it("rejects a phishing link before quoting", async () => {
     const g = fake();
-    let tokenChecked = false;
     const d = {
       ...deps(g),
       checkLink: async () => ({
         ok: false as const,
         reason: "link: this domain is on a phishing blocklist",
       }),
-      checkToken: async () => {
-        tokenChecked = true;
-        return { ok: true as const, status: "verified" as const };
-      },
     };
     const r = await processTake(d, card, null, "u");
     expect(r.status).toBe(400);
     expect(r.status === 400 && r.body.errors[0]).toMatch(/phishing blocklist/);
-    expect(tokenChecked).toBe(false);
     expect(g.calls).toEqual([]);
   });
 
-  it("rejects a fake token before moderation or quoting", async () => {
+  it("quotes after cheap checks only: no AI, no DexScreener, no facilitator verify", async () => {
     const g = fake();
-    let moderated = false;
+    const d = deps(g);
+    const r = await processTake(d, card, null, "u");
+    expect(r.status).toBe(402);
+    expect(r.status === 402 && r.body.accepts[0].amount).toBe("1000000");
+    expect(d.ran).toEqual(["link"]);
+    expect(g.calls).toEqual(["requirements"]);
+  });
+
+  it("runs the full order on a paid request: verify, limits, token, moderation, settle", async () => {
+    const g = fake();
+    const d = deps(g);
+    const r = await processTake(d, card, "x", "u");
+    expect(r.status).toBe(201);
+    expect(d.ran).toEqual(["link", "limit", "token", "moderate"]);
+    expect(g.calls).toEqual(["requirements", "verify", "settle"]);
+  });
+
+  it("applies limits to the facilitator-verified payer, not the claimed one", async () => {
+    const g = fake();
+    const d = deps(g, { payload: { authorization: { from: "0xvictim" } } });
+    await processTake(d, card, "x", "u");
+    expect(d.limitedPayer).toEqual(["0xbuyer"]);
+  });
+
+  it("never counts limits for a payment that fails verification", async () => {
+    const g = fake({ verify: async () => ({ ok: false, reason: "invalid_signature" }) });
+    const d = deps(g, { payload: { authorization: { from: "0xvictim" } } });
+    const r = await processTake(d, card, "x", "u");
+    expect(r.status).toBe(402);
+    expect(d.ran).not.toContain("limit");
+    expect(g.calls).not.toContain("settle");
+  });
+
+  it("refuses a wallet over its limit after verify and before settle", async () => {
+    const g = fake();
+    const d = { ...deps(g), limitPaid: async () => ({ ok: false, retryAfter: 120 }) };
+    const r = await processTake(d, card, "x", "u");
+    expect(r.status).toBe(429);
+    expect(r.status === 429 && r.retryAfter).toBe(120);
+    expect(g.calls).not.toContain("settle");
+  });
+
+  it("rejects a fake token after verify, uncharged, without running moderation", async () => {
+    const g = fake();
+    const d = deps(g);
+    const r = await processTake(
+      {
+        ...d,
+        checkToken: async () => ({ ok: false as const, reason: "this contract looks like a copy" }),
+      },
+      card,
+      "x",
+      "u",
+    );
+    expect(r.status).toBe(400);
+    expect(r.status === 400 && r.body.errors[0]).toMatch(/token check: .*copy.*not been charged/);
+    expect(d.ran).not.toContain("moderate");
+    expect(g.calls).not.toContain("settle");
+  });
+
+  it("refuses token cards, uncharged, when DexScreener is unavailable", async () => {
+    const g = fake();
     const d = {
       ...deps(g),
-      checkToken: async () => ({ ok: false as const, reason: "this contract looks like a copy" }),
-      moderate: async () => {
-        moderated = true;
-        return { ok: true as const };
-      },
+      checkToken: async () => ({
+        ok: false as const,
+        reason: "unavailable",
+        unavailable: true as const,
+      }),
     };
-    const r = await processTake(d, card, null, "u");
-    expect(r.status).toBe(400);
-    expect(r.status === 400 && r.body.errors[0]).toMatch(/token check: .*copy/);
-    expect(moderated).toBe(false);
-    expect(g.calls).toEqual([]);
+    const r = await processTake(d, card, "x", "u");
+    expect(r.status).toBe(503);
+    expect(r.status === 503 && r.body.error).toMatch(/not been charged/);
+    expect(g.calls).not.toContain("settle");
   });
 
-  it("rejects a flagged card before quoting a price", async () => {
+  it("rejects a flagged card after verify, uncharged", async () => {
     const g = fake();
     const d = {
       ...deps(g),
       moderate: async () => ({ ok: false as const, reason: "content flagged: hate" }),
     };
-    const r = await processTake(d, card, null, "u");
+    const r = await processTake(d, card, "x", "u");
     expect(r.status).toBe(400);
-    expect(r.status === 400 && r.body.errors[0]).toMatch(/hate/);
-    expect(g.calls).toEqual([]);
+    expect(r.status === 400 && r.body.errors[0]).toMatch(/hate.*not been charged/);
+    expect(g.calls).not.toContain("settle");
   });
 
   it("asks the buyer to retry, uncharged, when moderation is unavailable", async () => {
@@ -134,16 +209,10 @@ describe("processTake", () => {
     const r = await processTake(d, card, "x", "u");
     expect(r.status).toBe(503);
     expect(r.status === 503 && r.body.error).toMatch(/not been charged/);
-    expect(g.calls).toEqual([]);
+    expect(g.calls).not.toContain("settle");
   });
 
-  it("answers 402 with the price when there is no payment", async () => {
-    const r = await processTake(deps(fake()), card, null, "u");
-    expect(r.status).toBe(402);
-    expect(r.status === 402 && r.body.accepts[0].amount).toBe("1000000");
-  });
-
-  it("rejects a payment for a different amount or receiver", async () => {
+  it("rejects a payment for a different amount or receiver without calling the facilitator", async () => {
     const g = fake();
     const cheap = await processTake(deps(g, { accepted: { ...req, amount: "1" } }), card, "x", "u");
     expect(cheap.status).toBe(402);
@@ -154,39 +223,17 @@ describe("processTake", () => {
       "u",
     );
     expect(elsewhere.status).toBe(402);
+    expect(g.calls).not.toContain("verify");
     expect(g.calls).not.toContain("settle");
   });
 
-  it("rejects a payment from the receiving wallet itself", async () => {
-    const g = fake();
-    const r = await processTake(
-      deps(g, { payload: { authorization: { from: PAY_TO.toUpperCase().replace("0X", "0x") } } }),
-      card,
-      "x",
-      "u",
-    );
-    expect(r.status).toBe(402);
-    expect(r.status === 402 && r.body.error).toMatch(/receiving wallet/);
-    expect(g.calls).not.toContain("verify");
-  });
-
-  it("refuses a wallet over its limit before verifying the payment", async () => {
-    const g = fake();
-    const d = {
-      ...deps(g, { payload: { authorization: { from: "0xbuyer" } } }),
-      limitPaid: async () => ({ ok: false, retryAfter: 120 }),
-    };
-    const r = await processTake(d, card, "x", "u");
-    expect(r.status).toBe(429);
-    expect(r.status === 429 && r.retryAfter).toBe(120);
-    expect(g.calls).not.toContain("verify");
-  });
-
-  it("does not settle a payment that fails verification", async () => {
-    const g = fake({ verify: async () => ({ ok: false, reason: "insufficient_funds" }) });
+  it("rejects a payment from the receiving wallet itself (verified payer)", async () => {
+    const g = fake({
+      verify: async () => ({ ok: true, payer: PAY_TO.toUpperCase().replace("0X", "0x") }),
+    });
     const r = await processTake(deps(g), card, "x", "u");
     expect(r.status).toBe(402);
-    expect(r.status === 402 && r.body.error).toMatch(/insufficient_funds/);
+    expect(r.status === 402 && r.body.error).toMatch(/receiving wallet/);
     expect(g.calls).not.toContain("settle");
   });
 

@@ -30,9 +30,15 @@ Every viewer must see the box in the same place, and the server must agree on co
 
 `POST /api/take` with the card as JSON. Bots and agents use it the same way the page does.
 
-1. Without a payment, the answer is `402`. The price is in the `PAYMENT-REQUIRED` header (x402 v2, base64 JSON) and repeated in the body. A bad card gets `400` before any payment is asked for.
-2. The client signs an EIP-3009 USDC authorization for exactly that amount and retries with `PAYMENT-SIGNATURE`. The buyer needs USDC only, since the facilitator pays the gas.
-3. The server verifies, then settles. After settlement it writes the sale and queues the takeover in one SQLite transaction. The answer is `201` with the tx hash, the snapshot and a `PAYMENT-RESPONSE` header.
+1. **Quote.** Without a payment, the answer is `402`. The price is in the `PAYMENT-REQUIRED` header (x402 v2, base64 JSON) and repeated in the body. Only cheap checks run first: card and logo validation and the link check. A bad card gets `400`. An unpaid quote never spends AI or DexScreener calls, so quotes can't be used to burn those budgets.
+2. **Sign.** The client signs an EIP-3009 USDC authorization for exactly that amount and retries with `PAYMENT-SIGNATURE`. The buyer needs USDC only, since the facilitator pays the gas.
+3. **Verify, check, settle.** The server runs these steps in order:
+   - Verify the payment with the facilitator. This is free and moves no money.
+   - Use the facilitator's verified payer (which covers EIP-3009 and Permit2) for the self-payment check and the wallet and listing rate limits.
+   - Run the token checks and moderation.
+   - Only then settle.
+
+   Any refusal before settlement says "You have not been charged". After settlement the server writes the sale and queues the takeover in one SQLite transaction. The answer is `201` with the tx hash, the snapshot and a `PAYMENT-RESPONSE` header.
 
 If settlement succeeds but queueing fails, the server logs `SETTLED BUT NOT QUEUED <tx>` and answers `500` with the tx hash so the sale can be reconciled. A repeated tx hash is a no-op.
 
@@ -52,12 +58,13 @@ Exact fixed-window counters in one SQLite Durable Object (`worker/limiter.ts`, `
 
 | Key | Limit | Why |
 | --- | --- | --- |
-| Take attempts per IP | 20 per 10 min | Each quote runs AI moderation; this protects the free daily budget |
+| Take attempts per IP (IPv6 by /64) | 20 per 10 min | Quote and payment spam |
+| Uncached AI moderation runs, account-wide | 180 per day (`AI_DAILY_CAP`) | Keeps Workers AI inside the free 10,000 neurons; past it, moderation is "unavailable" and nobody is charged |
 | Paid takeovers per wallet | 10 per hour | Spam control |
 | Paid takeovers per listing (holder key) | 3 per hour | Nobody walls off the board with one card |
 | Reports per IP | 10 per hour | Report flooding |
 
-IPs are SHA-256 hashed before they're used as keys. Wallet and listing limits are checked after the payment is decoded and before the facilitator is called, so a refused attempt is never charged. Over-limit requests get `429` with `Retry-After`.
+IPs are SHA-256 hashed before they're used as keys. IPv6 addresses are grouped by /64, because one client usually controls a whole /64. Wallet and listing limits use the facilitator-verified payer and run after verify and before settle, so forged headers can't burn anyone else's quota, and a refused attempt is never charged. Over-limit requests get `429` with `Retry-After`. Request bodies are capped before parsing (about 900 KB for takes, 4 KB for reports and admin calls).
 
 ## Reports and admin
 
@@ -84,13 +91,13 @@ Cards that list a token (ticker, chain, contract) are checked against DexScreene
 3. No much bigger token with that ticker may live at a different address on the same chain: at least $100k of liquidity and 10x the submitted token's. This is the fake-CA check. Tickers repeat across chains legitimately, so other chains are never compared.
 
 - **Failures:** each one is rejected with a plain reason.
-- **DexScreener unreachable:** the card is allowed and shown with an orange "unverified" badge. The result is set by the server only.
+- **DexScreener unreachable:** the card is refused with "try again, you have not been charged". It fails closed, not open, because an attacker can provoke outages (for example by exhausting the shared rate limit) to slip a fake contract address through. This changes the spec's original "show unverified".
 - **Caching:** results are cached for 10 minutes in the Durable Object. The API allows 60 requests a minute.
 - **Fixtures:** response shapes are pinned by fixtures in `worker/fixtures/` (trimmed real responses for USDC and DEGEN). `TOKEN_CHECKS=off` exists only for tests and offline dev.
 
 ## Moderation
 
-- **When:** every card and logo is checked before a price is quoted (`POST /api/take` and the dev endpoint), so nobody pays for a takeover that would be rejected.
+- **When:** after the payment is verified and before it settles, so nobody pays for a takeover that would be rejected, and an unpaid quote can't spend the AI budget.
 - **Text:** Llama Guard 3 (`@cf/meta/llama-guard-3-8b`) classifies the card into the MLCommons hazard categories (S1-S14). Any hazard rejects it, with the category named.
 - **Logo:** Mistral Small 3.1 (`@cf/mistralai/mistral-small-3.1-24b-instruct`) is asked for a one-word SAFE/UNSAFE answer covering nudity, gore, hate symbols, extremism and drugs.
 - **Fails closed:** a quota error, an outage or an unexpected answer returns 503 ("try again later, you have not been charged").
@@ -103,7 +110,8 @@ Cards that list a token (ticker, chain, contract) are checked against DexScreene
 - **In the browser** (`src/logo-input.ts`): the buyer picks a PNG, JPG or WebP up to 500 KB. The page center-crops it to a square and re-encodes it to a 256x256 WebP on a canvas, which drops metadata and anything riding along in the file.
 - **On the server** (`worker/logo.ts`): it trusts nothing from the page. It checks the declared type against the magic bytes and enforces the 500 KB cap. SVG is never accepted, because SVGs can carry scripts.
 - **Storage:** the logo is stored in the Durable Object's SQLite in the same transaction as the takeover (and the sale). The card's `logo` field is always set by the server (`/api/logo/<takeover id>`), never taken from buyer input.
-- **Serving:** `GET /api/logo/:id` returns the exact content type, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; sandbox`, and an immutable cache header.
+- **Serving:** `GET /api/logo/:id` returns the exact content type, `X-Content-Type-Options: nosniff` and `Content-Security-Policy: default-src 'none'; sandbox`. It uses a 5-minute cache (`public, max-age=300`) plus the edge cache on the custom domain. When the admin removes a listing, its logo is deleted.
+- **Size:** the server reads pixel dimensions from the header (PNG IHDR, JPEG SOFn, WebP VP8, VP8L and VP8X) and refuses anything over 512x512. Huge canvases could crash viewers' browsers. Chrome's canvas encoder writes VP8X WebP, which is covered by real-image fixtures in `worker/fixtures/canvas-images.json`.
 - Image moderation comes in M3.
 
 ## Sales log (bookkeeping)

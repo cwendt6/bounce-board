@@ -16,8 +16,6 @@ export interface BoardCard extends Card {
   contract?: string;
   /** Set by the server only ("/api/logo/<takeover id>"), never taken from buyer input. */
   logo?: string;
-  /** Set by the server only: result of the DexScreener token checks. */
-  tokenCheck?: "verified" | "unverified";
 }
 
 const CHAINS: Chain[] = ["base", "solana", "ethereum"];

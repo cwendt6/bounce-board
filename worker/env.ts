@@ -21,6 +21,8 @@ export interface Env {
   AI?: { run(model: string, input: Record<string, unknown>): Promise<unknown> };
   /** "workers-ai" (default) or "off" (tests and offline dev only). */
   MODERATION?: string;
+  /** Uncached AI moderation runs per day (default 180, inside the free 10,000 neurons). */
+  AI_DAILY_CAP?: string;
   /** "dexscreener" (default) or "off" (tests and offline dev only). */
   TOKEN_CHECKS?: string;
   /** "metamask" (default) or "off" (tests and offline dev only). */

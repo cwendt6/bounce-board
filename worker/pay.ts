@@ -54,7 +54,7 @@ export interface Gateway {
   verify(
     payload: PaymentPayload,
     req: PaymentRequirements,
-  ): Promise<{ ok: boolean; reason?: string }>;
+  ): Promise<{ ok: boolean; reason?: string; payer?: string }>;
   settle(payload: PaymentPayload, req: PaymentRequirements): Promise<SettleResponse>;
 }
 
@@ -96,7 +96,7 @@ export class X402Gateway implements Gateway {
   async verify(payload: PaymentPayload, req: PaymentRequirements) {
     await this.init();
     const r = await this.server.verifyPayment(payload, req);
-    return { ok: r.isValid, reason: r.invalidReason ?? r.invalidMessage };
+    return { ok: r.isValid, reason: r.invalidReason ?? r.invalidMessage, payer: r.payer };
   }
 
   async settle(payload: PaymentPayload, req: PaymentRequirements) {
@@ -138,8 +138,8 @@ export interface TakeDeps {
   now: () => number;
   newId: () => string;
   decodePayment: (header: string) => PaymentPayload;
-  /** Moderation for the card and its logo data URL (null if none). */
-  moderate: (card: BoardCard, logoDataUrl: string | null) => Promise<Verdict>;
+  /** Moderation for the card and its logo (null if none). */
+  moderate: (card: BoardCard, logo: Logo | null) => Promise<Verdict>;
   /** DexScreener checks for token cards. */
   checkToken: (card: BoardCard) => Promise<TokenCheck>;
   /** Phishing and look-alike checks on the card's link. */
@@ -158,6 +158,8 @@ export async function processTake(
   paymentHeader: string | null,
   resourceUrl: string,
 ): Promise<TakeResult> {
+  // 1. Cheap checks only. An unpaid quote never spends AI or DexScreener calls, so it can't be
+  //    used to burn the daily moderation budget or trip third-party rate limits.
   const card = validateCard(body);
   const logo = parseLogo((body as { logo?: unknown } | null)?.logo);
   const errors = [...(card.ok ? [] : card.errors), ...(logo.ok ? [] : [logo.error])];
@@ -165,23 +167,6 @@ export async function processTake(
 
   const link = await deps.checkLink(card.card.link);
   if (!link.ok) return { status: 400, body: { errors: [link.reason] } };
-
-  // Token checks next: they're cheap and catch fake contract addresses.
-  const tok = await deps.checkToken(card.card);
-  if (!tok.ok) return { status: 400, body: { errors: [`token check: ${tok.reason}`] } };
-
-  // Moderate before quoting a price, so nobody pays for a card we would reject.
-  const rawLogo = logo.logo ? String((body as { logo?: unknown }).logo) : null;
-  const verdict = await deps.moderate(card.card, rawLogo);
-  if (verdict.ok === "unavailable") {
-    return {
-      status: 503,
-      body: {
-        error: "Moderation is unavailable right now. Try again later. You have not been charged.",
-      },
-    };
-  }
-  if (!verdict.ok) return { status: 400, body: { errors: [`rejected: ${verdict.reason}`] } };
 
   const required = await deps.gateway.requirements(resourceUrl);
   if (!paymentHeader) return { status: 402, body: required };
@@ -204,9 +189,21 @@ export async function processTake(
   if (!req)
     return { status: 402, body: { ...required, error: "payment does not match the price" } };
 
+  // 2. Verify the signed payment. Free, moves no money, and proves who the payer is.
+  const v = await deps.gateway.verify(payload, req);
+  if (!v.ok)
+    return {
+      status: 402,
+      body: { ...required, error: `payment invalid: ${v.reason ?? "unknown"}` },
+    };
+
+  // The facilitator's verified payer covers every payload shape (EIP-3009 and Permit2).
+  const claimed = (payload.payload as { authorization?: { from?: string } })?.authorization?.from;
+  const payer = (v.payer ?? claimed ?? "").toLowerCase();
+  if (!payer) return { status: 402, body: { ...required, error: "payment has no payer" } };
+
   // Paying yourself moves no money and would log a fake sale.
-  const from = (payload.payload as { authorization?: { from?: string } })?.authorization?.from;
-  if (from && from.toLowerCase() === req.payTo.toLowerCase()) {
+  if (payer === req.payTo.toLowerCase()) {
     return {
       status: 402,
       body: {
@@ -216,27 +213,44 @@ export async function processTake(
     };
   }
 
-  // Per-wallet and per-card limits, before any facilitator call.
-  if (from) {
-    const lim = await deps.limitPaid(from.toLowerCase(), card.card);
-    if (!lim.ok) {
-      return {
-        status: 429,
-        body: {
-          error: "Too many takeovers from this wallet or for this listing. Try again later.",
-        },
-        retryAfter: lim.retryAfter,
-      };
-    }
+  // 3. Limits on the verified payer, so nobody can burn another wallet's or listing's quota
+  //    with forged headers.
+  const lim = await deps.limitPaid(payer, card.card);
+  if (!lim.ok) {
+    return {
+      status: 429,
+      body: { error: "Too many takeovers from this wallet or for this listing. Try again later." },
+      retryAfter: lim.retryAfter,
+    };
   }
 
-  const v = await deps.gateway.verify(payload, req);
-  if (!v.ok)
-    return {
-      status: 402,
-      body: { ...required, error: `payment invalid: ${v.reason ?? "unknown"}` },
-    };
+  // 4. Token checks and moderation, still before any money moves.
+  const notCharged = "You have not been charged.";
+  const tok = await deps.checkToken(card.card);
+  if (!tok.ok) {
+    if (tok.unavailable) {
+      return {
+        status: 503,
+        body: {
+          error: `Token checks are unavailable right now. Try again in a minute. ${notCharged}`,
+        },
+      };
+    }
+    return { status: 400, body: { errors: [`token check: ${tok.reason}. ${notCharged}`] } };
+  }
 
+  const verdict = await deps.moderate(card.card, logo.logo);
+  if (verdict.ok === "unavailable") {
+    return {
+      status: 503,
+      body: { error: `Moderation is unavailable right now. Try again later. ${notCharged}` },
+    };
+  }
+  if (!verdict.ok) {
+    return { status: 400, body: { errors: [`rejected: ${verdict.reason}. ${notCharged}`] } };
+  }
+
+  // 5. Settle. Only now does money move.
   const s = await deps.gateway.settle(payload, req);
   if (!s.success || !s.transaction) {
     return {
@@ -256,13 +270,12 @@ export async function processTake(
     amount,
     usd_value: usdValue(amount),
     tx_hash: s.transaction,
-    payer: s.payer ?? "",
+    payer: s.payer ?? payer,
     receiver: req.payTo,
     received_at: deps.now(),
     facilitator: facilitatorLabel(deps.cfg.facilitatorUrl),
   };
-  const shown: BoardCard = card.card.ticker ? { ...card.card, tokenCheck: tok.status } : card.card;
-  return { status: 201, card: shown, logo: logo.logo, sale, settle: s };
+  return { status: 201, card: card.card, logo: logo.logo, sale, settle: s };
 }
 
 export const SALE_COLUMNS: (keyof Sale)[] = [

@@ -64,18 +64,18 @@ describe("DexScreener fixtures (pinned response shapes)", () => {
 describe("checkToken", () => {
   it("skips cards without a token, with no network calls", async () => {
     const f = fake([]);
-    expect(await checkToken(base, f.fetcher)).toEqual({ ok: true, status: "verified" });
+    expect(await checkToken(base, f.fetcher)).toEqual({ ok: true });
     expect(f.calls).toEqual([]);
   });
 
   it("verifies a real token at its real address", async () => {
     const r = await checkToken(token("USDC", USDC_BASE), fake(usdcPairs).fetcher);
-    expect(r).toEqual({ ok: true, status: "verified" });
+    expect(r).toEqual({ ok: true });
   });
 
   it("verifies the real DEGEN even though a bigger DEGEN exists on another chain", async () => {
     const r = await checkToken(token("degen", DEGEN_BASE), fake(realDegenPairs).fetcher);
-    expect(r).toEqual({ ok: true, status: "verified" });
+    expect(r).toEqual({ ok: true });
   });
 
   it("rejects a fake CA for a known ticker", async () => {
@@ -98,8 +98,8 @@ describe("checkToken", () => {
     expect(!thin.ok && thin.reason).toMatch(/liquidity is below \$1,000/);
   });
 
-  it("allows but marks unverified when DexScreener is unavailable", async () => {
+  it("fails closed when DexScreener is unavailable (outages can be provoked)", async () => {
     const r = await checkToken(token("DEGEN", FAKE), fake([], { status: 429 }).fetcher);
-    expect(r).toEqual({ ok: true, status: "unverified" });
+    expect(r).toEqual({ ok: false, reason: "token checks are unavailable", unavailable: true });
   });
 });

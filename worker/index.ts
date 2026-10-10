@@ -3,14 +3,21 @@ import {
   encodePaymentRequiredHeader,
   encodePaymentResponseHeader,
 } from "@x402/core/http";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { holderKey } from "../src/core/leaderboard";
 import { Board } from "./board";
 import { type BoardCard, stripControl, validateCard } from "./card";
 import type { Env } from "./env";
-import { RateLimiter, RULES, type Rule } from "./limiter";
+import {
+  aiDailyRule,
+  DEFAULT_AI_DAILY_CAP,
+  ipBucket,
+  RateLimiter,
+  RULES,
+  type Rule,
+} from "./limiter";
 import { checkLink as checkLinkRules, type LinkCheck } from "./links";
-import { parseLogo } from "./logo";
+import { type Logo, parseLogo } from "./logo";
 import {
   allowAll,
   type Moderator,
@@ -22,7 +29,13 @@ import { type Gateway, type PayConfig, processTake, salesCsv, X402Gateway } from
 import { PhishingListStore } from "./phishing";
 import { checkToken, type TokenCheck } from "./tokens";
 
+type C = Context<{ Bindings: Env }>;
+
 const app = new Hono<{ Bindings: Env }>();
+
+/** Request body caps, enforced before parsing. A take carries a logo of up to 500 KB (base64). */
+const MAX_TAKE_BODY = 900 * 1024;
+const MAX_SMALL_BODY = 4 * 1024;
 
 const limiter = (env: Env) => env.LIMITER.get(env.LIMITER.idFromName("limits"));
 
@@ -31,9 +44,13 @@ async function sha256(text: string): Promise<string> {
   return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** Hashed client IP, so rate-limit keys never hold raw IPs. */
-async function ipKey(req: { header(name: string): string | undefined }): Promise<string> {
-  return `ip:${(await sha256(req.header("CF-Connecting-IP") ?? "unknown")).slice(0, 32)}`;
+/** The client's IP bucket (IPv6 grouped by /64). Hashed before it is stored anywhere. */
+function clientBucket(c: C): string {
+  return ipBucket(c.req.header("CF-Connecting-IP") ?? "unknown");
+}
+
+async function ipKey(c: C): Promise<string> {
+  return `ip:${(await sha256(clientBucket(c))).slice(0, 32)}`;
 }
 
 /** null if allowed; otherwise a 429 response with Retry-After. */
@@ -44,6 +61,42 @@ async function limited(env: Env, key: string, rule: Rule): Promise<Response | nu
     status: 429,
     headers: { "Content-Type": "application/json", "Retry-After": String(r.retryAfter) },
   });
+}
+
+/**
+ * Read a JSON body without ever buffering more than `max` bytes. Returns the parsed value
+ * (null for empty or invalid JSON), or a 413 response.
+ */
+async function readJson(c: C, max: number): Promise<{ value: unknown } | Response> {
+  const tooBig = () => c.json({ error: "request body too large" }, 413);
+  const declared = Number(c.req.header("Content-Length") ?? "0");
+  if (declared > max) return tooBig();
+  const stream = c.req.raw.body;
+  if (!stream) return { value: null };
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel();
+      return tooBig();
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let at = 0;
+  for (const ch of chunks) {
+    bytes.set(ch, at);
+    at += ch.byteLength;
+  }
+  try {
+    return { value: JSON.parse(new TextDecoder().decode(bytes)) };
+  } catch {
+    return { value: null };
+  }
 }
 
 /** There is one board, so one Durable Object instance. */
@@ -58,14 +111,16 @@ app.get("/api/live", async (c) => {
   return res as unknown as Response;
 });
 
-// Local dev and tests only: queue a takeover with no payment.
+// Local dev and tests only: queue a takeover with no payment (same checks as a paid take).
 app.post("/api/dev/take", async (c) => {
   if (c.env.DEV_FAKE_PAY !== "true") return c.notFound();
-  const tooMany = await limited(c.env, `take:${await ipKey(c.req)}`, RULES.takePerIp);
+  const tooMany = await limited(c.env, `take:${await ipKey(c)}`, RULES.takePerIp);
   if (tooMany) return tooMany;
-  const body = await c.req.json().catch(() => null);
+  const read = await readJson(c, MAX_TAKE_BODY);
+  if (read instanceof Response) return read;
+  const body = read.value as { logo?: unknown } | null;
   const result = validateCard(body);
-  const logo = parseLogo((body as { logo?: unknown } | null)?.logo);
+  const logo = parseLogo(body?.logo);
   if (!result.ok || !logo.ok) {
     const errors = [...(result.ok ? [] : result.errors), ...(logo.ok ? [] : [logo.error])];
     return c.json({ errors }, 400);
@@ -73,17 +128,17 @@ app.post("/api/dev/take", async (c) => {
   const link = await linkCheck(c.env, result.card.link);
   if (!link.ok) return c.json({ errors: [link.reason] }, 400);
   const tok = await tokenCheck(c.env, result.card);
-  if (!tok.ok) return c.json({ errors: [`token check: ${tok.reason}`] }, 400);
-  const verdict = await moderate(c.env, result.card, logo.logo ? String(body.logo) : null);
+  if (!tok.ok) {
+    return tok.unavailable
+      ? c.json({ error: "Token checks are unavailable right now." }, 503)
+      : c.json({ errors: [`token check: ${tok.reason}`] }, 400);
+  }
+  const verdict = await moderate(c.env, result.card, logo.logo);
   if (verdict.ok === "unavailable")
     return c.json({ error: "Moderation is unavailable right now." }, 503);
   if (!verdict.ok) return c.json({ errors: [`rejected: ${verdict.reason}`] }, 400);
   const snapshot = await board(c.env).enqueue(
-    {
-      id: crypto.randomUUID(),
-      paidAtMs: Date.now(),
-      card: result.card.ticker ? { ...result.card, tokenCheck: tok.status } : result.card,
-    },
+    { id: crypto.randomUUID(), paidAtMs: Date.now(), card: result.card },
     logo.logo,
   );
   return c.json(snapshot, 201);
@@ -95,14 +150,23 @@ function moderator(env: Env): Moderator {
   return new WorkersAiModerator(env.AI);
 }
 
-/** Moderate with a 24 h cache in the Durable Object. "Unavailable" is never cached. */
-async function moderate(env: Env, card: BoardCard, logoDataUrl: string | null): Promise<Verdict> {
-  const key = await verdictKey(card, logoDataUrl);
+/**
+ * Moderate with a 24 h verdict cache in the Durable Object. Uncached runs count against a
+ * global daily cap that keeps Workers AI inside its free allowance; past the cap, moderation is
+ * "unavailable" (the buyer is asked to retry, uncharged). "Unavailable" is never cached.
+ */
+async function moderate(env: Env, card: BoardCard, logo: Logo | null): Promise<Verdict> {
+  const key = await verdictKey(card, logo);
   const b = board(env);
   const cached = await b.verdict(key);
   if (cached)
     return cached.ok ? { ok: true } : { ok: false, reason: cached.reason ?? "content flagged" };
-  const v = await moderator(env).check(card, logoDataUrl);
+  if (env.MODERATION !== "off") {
+    const cap = Number(env.AI_DAILY_CAP ?? DEFAULT_AI_DAILY_CAP) || DEFAULT_AI_DAILY_CAP;
+    const budget = await limiter(env).hit("ai:global", aiDailyRule(cap));
+    if (!budget.ok) return { ok: "unavailable" };
+  }
+  const v = await moderator(env).check(card, logo);
   if (v.ok === true) await b.saveVerdict(key, true, null);
   else if (v.ok === false) await b.saveVerdict(key, false, v.reason);
   return v;
@@ -120,9 +184,9 @@ async function linkCheck(env: Env, link: string): Promise<LinkCheck> {
   }
 }
 
-/** DexScreener token checks with a 10-minute cache in the Durable Object. */
+/** DexScreener token checks with a 10-minute cache. "Unavailable" is never cached. */
 async function tokenCheck(env: Env, card: BoardCard): Promise<TokenCheck> {
-  if (env.TOKEN_CHECKS === "off" || !card.ticker) return { ok: true, status: "verified" };
+  if (env.TOKEN_CHECKS === "off" || !card.ticker) return { ok: true };
   const key = `${card.chain}:${card.contract}:${card.ticker}`;
   const b = board(env);
   const cached = await b.tokenCheck(key);
@@ -130,8 +194,7 @@ async function tokenCheck(env: Env, card: BoardCard): Promise<TokenCheck> {
   const r = await checkToken(card, (url) =>
     fetch(url, { headers: { Accept: "application/json", "User-Agent": "bounce-board" } }),
   );
-  // "unverified" means DexScreener was unreachable: don't cache that, try again next time.
-  if (!(r.ok && r.status === "unverified")) await b.saveTokenCheck(key, JSON.stringify(r));
+  if (!(!r.ok && r.unavailable)) await b.saveTokenCheck(key, JSON.stringify(r));
   return r;
 }
 
@@ -145,21 +208,23 @@ function gatewayFor(cfg: PayConfig): Gateway {
 
 /**
  * Take the box. Send the card as JSON. Without a PAYMENT-SIGNATURE header this answers 402
- * with the price in the PAYMENT-REQUIRED header (x402 v2) and body. With a valid payment it
- * settles, records the sale, queues the takeover and answers 201 with the board snapshot.
+ * with the price in the PAYMENT-REQUIRED header (x402 v2) and body, after cheap checks only.
+ * With a payment: verify, limits on the verified payer, token checks, moderation, then settle,
+ * record the sale, queue the takeover, and answer 201 with the board snapshot.
  */
 app.post("/api/take", async (c) => {
   const payTo = c.env.PAY_TO_ADDRESS;
   if (!payTo) return c.json({ error: "payments are not configured" }, 503);
-  const tooMany = await limited(c.env, `take:${await ipKey(c.req)}`, RULES.takePerIp);
+  const tooMany = await limited(c.env, `take:${await ipKey(c)}`, RULES.takePerIp);
   if (tooMany) return tooMany;
+  const read = await readJson(c, MAX_TAKE_BODY);
+  if (read instanceof Response) return read;
   const cfg: PayConfig = {
     network: c.env.X402_NETWORK,
     payTo,
     priceUsd: c.env.PRICE_USD,
     facilitatorUrl: c.env.FACILITATOR_URL,
   };
-  const body = await c.req.json().catch(() => null);
   let result: Awaited<ReturnType<typeof processTake>>;
   try {
     result = await processTake(
@@ -179,7 +244,7 @@ app.post("/api/take", async (c) => {
           return l.hit(`card:${holderKey(card)}`, RULES.paidPerCard);
         },
       },
-      body,
+      read.value,
       c.req.header("PAYMENT-SIGNATURE") ?? c.req.header("X-PAYMENT") ?? null,
       new URL("/api/take", c.req.url).toString(),
     );
@@ -214,19 +279,26 @@ app.post("/api/take", async (c) => {
   }
 });
 
-// Logos are served as images only: exact type, no sniffing, no scripts, cached forever
-// (a logo never changes for a given takeover id).
+// Logos are served as images only: exact type, no sniffing, no scripts. A short cache, because
+// the admin can remove a listing (its logo is then deleted). Edge-cached on the custom domain.
 app.get("/api/logo/:id", async (c) => {
   const id = c.req.param("id");
   if (!/^[0-9a-f-]{36}$/.test(id)) return c.notFound();
+  const edge = typeof caches !== "undefined" ? caches.default : null;
+  const hit = edge ? await edge.match(c.req.raw) : undefined;
+  if (hit) return hit as unknown as Response;
   const logo = await board(c.env).logo(id);
   if (!logo) return c.notFound();
-  return c.body(logo.data, 200, {
-    "Content-Type": logo.mime,
-    "X-Content-Type-Options": "nosniff",
-    "Content-Security-Policy": "default-src 'none'; sandbox",
-    "Cache-Control": "public, max-age=31536000, immutable",
+  const res = new Response(logo.data, {
+    headers: {
+      "Content-Type": logo.mime,
+      "X-Content-Type-Options": "nosniff",
+      "Content-Security-Policy": "default-src 'none'; sandbox",
+      "Cache-Control": "public, max-age=300",
+    },
   });
+  if (edge) c.executionCtx.waitUntil(edge.put(c.req.raw, res.clone()));
+  return res;
 });
 
 function sameToken(a: string, b: string): boolean {
@@ -242,11 +314,11 @@ export const REPORT_CATEGORIES = ["scam", "nsfw", "impersonation", "hate", "othe
 
 /** Anyone can report a takeover. Reporters are stored only as a hash (dedupe, no raw IPs). */
 app.post("/api/report", async (c) => {
-  const body = (await c.req.json().catch(() => null)) as {
-    id?: unknown;
-    category?: unknown;
-    note?: unknown;
-  } | null;
+  const tooMany = await limited(c.env, `report:${await ipKey(c)}`, RULES.reportPerIp);
+  if (tooMany) return tooMany;
+  const read = await readJson(c, MAX_SMALL_BODY);
+  if (read instanceof Response) return read;
+  const body = read.value as { id?: unknown; category?: unknown; note?: unknown } | null;
   const id = typeof body?.id === "string" ? body.id : "";
   const category = typeof body?.category === "string" ? body.category : "";
   const note = stripControl(typeof body?.note === "string" ? body.note : "");
@@ -255,26 +327,17 @@ app.post("/api/report", async (c) => {
     return c.json({ error: `category: one of ${REPORT_CATEGORIES.join(", ")}` }, 400);
   }
   if (note.length > 200) return c.json({ error: "note: at most 200 characters" }, 400);
-  const tooMany = await limited(c.env, `report:${await ipKey(c.req)}`, RULES.reportPerIp);
-  if (tooMany) return tooMany;
-  const ip = c.req.header("CF-Connecting-IP") ?? "unknown";
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${ip}:${id}`));
-  const reporter = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const reporter = await sha256(`${clientBucket(c)}:${id}`);
   const ok = await board(c.env).report(id, category, note, reporter);
   return ok ? c.json({ ok: true }, 201) : c.json({ error: "unknown takeover" }, 404);
 });
 
 /** null if the request carries the admin token; otherwise the response to send. */
-function adminDenied(c: { env: Env; req: { header(name: string): string | undefined } }) {
+function adminDenied(c: C) {
   const token = c.env.ADMIN_TOKEN;
-  if (!token) return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+  if (!token) return c.json({ error: "not found" }, 404);
   const auth = c.req.header("Authorization") ?? "";
-  if (!sameToken(auth, `Bearer ${token}`)) {
-    return new Response(JSON.stringify({ error: "unauthorized" }), {
-      status: 401,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
+  if (!sameToken(auth, `Bearer ${token}`)) return c.json({ error: "unauthorized" }, 401);
   return null;
 }
 
@@ -284,19 +347,29 @@ app.get("/api/admin/reports", async (c) => {
   return c.json(await board(c.env).reports());
 });
 
-/** Kill switch: remove the current holder now (next buyer, else the previous holder, returns). */
+/**
+ * Kill switch: remove the current holder now (next buyer, else the previous holder, returns).
+ * Requires the id of the holder being killed; answers 409 if the board has moved on.
+ */
 app.post("/api/admin/kill", async (c) => {
   const denied = adminDenied(c);
   if (denied) return denied;
-  const body = (await c.req.json().catch(() => ({}))) as { reason?: unknown };
+  const read = await readJson(c, MAX_SMALL_BODY);
+  if (read instanceof Response) return read;
+  const body = (read.value ?? {}) as { id?: unknown; reason?: unknown };
+  if (typeof body.id !== "string")
+    return c.json({ error: "id of the current holder required" }, 400);
   const reason = typeof body.reason === "string" ? body.reason.slice(0, 200) : "removed by admin";
-  return c.json(await board(c.env).kill(reason));
+  const r = await board(c.env).kill(reason, body.id);
+  return c.json(r, r.killed ? 200 : 409);
 });
 
 app.post("/api/admin/remove", async (c) => {
   const denied = adminDenied(c);
   if (denied) return denied;
-  const body = (await c.req.json().catch(() => ({}))) as { id?: unknown; reason?: unknown };
+  const read = await readJson(c, MAX_SMALL_BODY);
+  if (read instanceof Response) return read;
+  const body = (read.value ?? {}) as { id?: unknown; reason?: unknown };
   if (typeof body.id !== "string") return c.json({ error: "id required" }, 400);
   const reason = typeof body.reason === "string" ? body.reason.slice(0, 200) : "removed by admin";
   const r = await board(c.env).remove(body.id, reason);
@@ -324,7 +397,11 @@ export default {
     ctx.waitUntil(
       phishing(env)
         .refresh()
-        .then((n) => console.log(`phishing list refreshed: ${n} domains`))
+        .then((r) =>
+          console.log(
+            `phishing list refreshed: ${r.domains} domains, ${r.rowsWritten} rows written`,
+          ),
+        )
         .catch((e) => console.error("phishing list refresh failed", e)),
     );
   },

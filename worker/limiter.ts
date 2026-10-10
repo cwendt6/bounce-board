@@ -27,6 +27,29 @@ export const RULES = {
   reportPerIp: { limit: 10, windowMs: 60 * 60_000 },
 } satisfies Record<string, Rule>;
 
+/** Uncached AI moderation runs per day, account-wide (Workers AI free plan: 10,000 neurons/day,
+ *  about 45 per run). Override with the AI_DAILY_CAP var after upgrading the plan. */
+export const DEFAULT_AI_DAILY_CAP = 180;
+export const aiDailyRule = (cap: number): Rule => ({ limit: cap, windowMs: 86_400_000 });
+
+/**
+ * The rate-limit bucket for a client IP: IPv4 as is, IPv6 by its /64 prefix (one household or
+ * one server usually controls a whole /64, so per-address buckets are trivially bypassed).
+ */
+export function ipBucket(ip: string): string {
+  const raw = ip.trim().toLowerCase();
+  if (!raw.includes(":")) return raw || "unknown";
+  const [head, tail] = raw.split("::");
+  const h = head ? head.split(":") : [];
+  const t = tail !== undefined && tail !== "" ? tail.split(":") : [];
+  const groups =
+    tail === undefined ? h : [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill("0"), ...t];
+  return `${groups
+    .slice(0, 4)
+    .map((g) => (g || "0").replace(/^0+(?=.)/, ""))
+    .join(":")}::/64`;
+}
+
 /** Pure window math, shared by the Durable Object and tests. */
 export function windowStart(now: number, windowMs: number): number {
   return Math.floor(now / windowMs) * windowMs;

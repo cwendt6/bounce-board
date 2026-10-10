@@ -1,5 +1,6 @@
 import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import { ipBucket } from "./limiter";
 
 const limiter = (name: string) => env.LIMITER.get(env.LIMITER.idFromName(name));
 const rule = { limit: 3, windowMs: 60_000 };
@@ -36,5 +37,20 @@ describe("route limits", () => {
     }
     expect(last?.status).toBe(429);
     expect(Number(last?.headers.get("Retry-After"))).toBeGreaterThan(0);
+  });
+});
+
+describe("ipBucket", () => {
+  it("keeps IPv4 addresses whole", () => {
+    expect(ipBucket("203.0.113.7")).toBe("203.0.113.7");
+  });
+
+  it("groups IPv6 addresses by /64, including compressed forms", () => {
+    const a = ipBucket("2001:db8:abcd:12::1");
+    expect(a).toBe("2001:db8:abcd:12::/64");
+    expect(ipBucket("2001:0db8:abcd:0012:ffff:ffff:ffff:ffff")).toBe(a);
+    expect(ipBucket("2001:db8:abcd:13::1")).not.toBe(a);
+    expect(ipBucket("::1")).toBe("0:0:0:0::/64");
+    expect(ipBucket("2001:db8::")).toBe("2001:db8:0:0::/64");
   });
 });

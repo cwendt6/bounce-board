@@ -7,7 +7,8 @@
  *  2. the token has a trading pool with real liquidity,
  *  3. no much bigger token with that ticker lives at a different address.
  * Tickers legitimately repeat across chains, so we never compare across chains.
- * If DexScreener can't be reached, the card is allowed but marked "unverified".
+ * If DexScreener can't be reached, the card is refused (try again, not charged), not waved
+ * through, because an attacker can provoke outages to slip a fake contract address in.
  */
 import type { BoardCard } from "./card";
 
@@ -41,9 +42,13 @@ export interface Pair {
   liquidity?: { usd?: number };
 }
 
-export type TokenCheck =
-  | { ok: true; status: "verified" | "unverified" }
-  | { ok: false; reason: string };
+/**
+ * ok: the token passed. Otherwise a reason; `unavailable` means DexScreener couldn't be
+ * reached. That fails closed (the buyer is asked to retry, uncharged), because an attacker
+ * can provoke outages (for example by exhausting the shared rate limit) to slip a fake
+ * contract address through.
+ */
+export type TokenCheck = { ok: true } | { ok: false; reason: string; unavailable?: true };
 
 type Fetch = (url: string) => Promise<Response>;
 
@@ -96,7 +101,7 @@ export async function checkToken(
   fetcher: Fetch,
   rules: TokenRules = DEFAULT_RULES,
 ): Promise<TokenCheck> {
-  if (!card.ticker || !card.chain || !card.contract) return { ok: true, status: "verified" };
+  if (!card.ticker || !card.chain || !card.contract) return { ok: true };
   const { ticker, chain, contract } = card;
 
   let own: Pair[];
@@ -112,7 +117,7 @@ export async function checkToken(
       : [];
   } catch (e) {
     console.error("token check unavailable", e);
-    return { ok: true, status: "unverified" };
+    return { ok: false, reason: "token checks are unavailable", unavailable: true };
   }
 
   const { liquidity, token } = summarize(own, chain, contract);
@@ -137,5 +142,5 @@ export async function checkToken(
       reason: `$${ticker} on ${chain} is a different, larger token (${short(namesake.token.address)}); this contract looks like a copy`,
     };
   }
-  return { ok: true, status: "verified" };
+  return { ok: true };
 }
