@@ -56,6 +56,7 @@ Not in M4:
 
 - M3 is merged and deployed on bouncebox.xyz: terms, privacy and the "paid placement" label.
 - Coinbase Wallet signs a Base Sepolia payment on bouncebox.xyz with no "unsafe" warning. If it does not, the M4 build goes on, but cutover (C1) waits for Blockaid.
+  - 2026-10-13: Cole's test on bouncebox.xyz worked (signature screen, settled, card up, sale row recorded), but the "This site may be unsafe" warning still shows. Cole files the Blockaid report (P6). Cutover waits for it.
 - bounce-alarm-probe is deleted (done, 2026-10-10).
 - The old leaked CDP key is gone from the CDP portal. P4 decides whether the rotated key is reused.
 - P10 (account security) is done.
@@ -151,12 +152,13 @@ Claude sets the production ADMIN_TOKEN from a new mode-600 file in the private d
 4. Save the ticket ID and tell Claude. It goes in STATUS.md.
 5. If MetaMask flags the site, click "See details", then "Report an issue".
 
-**P7. [OWNER DOES] Set up contact and alert addresses.**
+**P7. [OWNER DOES] Set up an alert inbox.**
+
+The public contact stays on GitHub issues for now (decision 9, decided 2026-10-13). No public email address is needed. Email Routing is only for alerts:
 
 1. In Cloudflare: bouncebox.xyz > Email > Email Routing > enable. Email Routing is free.
-2. Add hello@bouncebox.xyz for terms, privacy and refund requests.
-3. Add your inbox as a destination and confirm the email Cloudflare sends.
-4. PR8 sends money alerts to that confirmed inbox [CHECK that the Worker send-email binding works on Free].
+2. Add your inbox as a destination and confirm the email Cloudflare sends. Do not create a public address.
+3. PR8 sends money alerts to that confirmed inbox [CHECK that the Worker send-email binding works on Free]. If it doesn't, alerts fall back to an n8n check on the Mac mini.
 
 **P8. [OWNER DOES] Paperwork.** Not tax or legal advice. Ask your CPA:
 
@@ -168,7 +170,7 @@ Claude sets the production ADMIN_TOKEN from a new mode-600 file in the private d
 - The domain and Cloudflare costs were paid personally. Should they be recorded as owner contributions, or reimbursed?
 - Confirm "Yes" on the Form 1040 digital asset question.
 
-Also read the M3 terms and privacy pages. They are Claude drafts, not a lawyer's review (decision 18).
+The M3 terms and privacy pages are Claude drafts, not a lawyer's review. Cole read them and is fine with them (decision 18, 2026-10-13).
 
 **P9. [OWNER DOES] Check Coinbase Business.** Confirm it accepts USDC on Base. Get a fresh deposit address at each sweep. Make the first sweep $1 and confirm it is credited before you send more.
 
@@ -321,7 +323,7 @@ This is the core of M4.
 - API: the body field `terms` must equal `TERMS_VERSION`. It is checked first, before link, token and AI checks. If it is missing or old, the answer is 400 with the current version and the terms URL.
 - Stored in `takeovers.terms_version`: an additive column, with a guarded ALTER for staging's existing table.
 - Terms content to add or confirm. Cole reviews it. Not legal advice.
-  - The operator (CT Wendt Holdings LLC, per decision 9) and the contact address.
+  - The operator (CT Wendt Holdings LLC) and the contact (GitHub issues, per decision 9). Refund requests by GitHub issue need a way to reply privately; settle that before payments open.
   - The buyer is 18 or older, is not on a US sanctions list, and is not in an embargoed region.
   - The refund policy from decision 7, with a 7-day refund target.
   - Payments are final on chain. Refunds go only to the paying address.
@@ -648,7 +650,7 @@ The plan refers to these by number. Recommended answers are marked.
 6. Cloudflare plan. Recommended: stay on Free at launch only if S5 shows the paid path under 5 ms of CPU at p99. If it does not, upgrade to Workers Paid ($5 a month minimum) before payments open. Paid also removes the 100,000-row daily Durable Object limit, which public testnet abuse could hit.
 7. Refund policy for the terms. Proposal: no refund once a takeover has shown, and none for listings removed for breaking the rules. Refund when a payment settles but the takeover never shows, or when we remove a listing by mistake. Refunds go only to the paying address, within 7 days, after a sanctions check. You send them from the LLC wallet.
 8. Sanctions. Recommended: check payers against OFAC's SDN crypto addresses before settle and before any refund, and add a sanctions statement to the terms. CDP's own screening is not verified. Separately, decide whether to block the paid step from fully embargoed countries by IP. That is a lawyer question, and it may affect wallet-scanner reviews. Not legal advice.
-9. Contact address (hello@bouncebox.xyz via Email Routing), and naming CT Wendt Holdings LLC as the operator in the terms. Recommended, so buyers contract with the LLC, not with you personally.
+9. Contact address, and naming CT Wendt Holdings LLC as the operator in the terms. **Decided 2026-10-13:** the LLC is the operator (live in the M3 terms), and the contact stays on GitHub issues for now because traffic is expected to be low. Revisit if refund or privacy requests start coming in, since those shouldn't be handled in public.
 10. Alerts (recommended). The Worker emails your inbox about unknown payments, sweeper problems, sanctions matches and moderation outages, so you hear about them between Claude sessions.
 11. Pause authority: may Claude pause production payments without asking when money is at risk, and tell you after? Reopening always needs your OK.
 12. Production deploys after launch go only through npm run deploy:prod. Any change to payment code or production config needs your OK. UI-only changes ship after staging checks.
@@ -657,5 +659,5 @@ The plan refers to these by number. Recommended answers are marked.
 15. Refund drill (recommended): send the $1 smoke-test payment back to the buyer wallet to prove the LLC wallet can send. Skip the optional second mainnet test through the API example, because it needs a funded key in a script.
 16. Price stays at $1 USDC per takeover at launch.
 17. CPA questions before the first real sale (P8). How are the smoke test and its refund treated? How are refunds recorded? Does a 1099-K apply? Do Indiana sales tax or EU and UK VAT apply to digital placements? How should the personally paid domain and Cloudflare costs be recorded? Confirm the Form 1040 digital asset answer. Not tax advice.
-18. Optional lawyer review of the terms and privacy pages before payments open (costs money). Otherwise you review the Claude drafts yourself.
+18. Optional lawyer review of the terms and privacy pages before payments open (costs money). Otherwise you review the Claude drafts yourself. **2026-10-13:** Cole reviewed the drafts and is fine with them. A lawyer review stays optional.
 19. Account security (P10) before D1. Hardware-key or passkey 2FA on Cloudflare, CDP, GitHub, Coinbase and Coinbase Business. DNSSEC and registrar lock on bouncebox.xyz.
